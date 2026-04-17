@@ -22,6 +22,8 @@ When `lan_interface` is configured, the analyzer also captures the switch mirror
 - `dst` is in `local_networks` and `src` is public: download for `dst`
 - private, broadcast, multicast, and LAN-to-LAN traffic are ignored for client public totals
 
+The LAN stream is also used to learn client names from DHCP hostnames, mDNS A/AAAA answers, and LLMNR A/AAAA answers when those packets are visible on the mirror port.
+
 The WAN IP can be refreshed automatically from an HTTP endpoint, with an optional static fallback.
 
 ## Build
@@ -125,6 +127,8 @@ Set `local_networks` to your LAN CIDRs. Packets matching those CIDRs are shown a
 
 Client traffic is written from `lan_interface` into `client_buckets`. It uses the LAN-side IP and the Ethernet MAC from the local side of the packet, so DHCP address changes can still be correlated by MAC in the Web UI/API.
 
+Client names are written into `client_names` when the analyzer sees DHCP hostname, mDNS, or LLMNR name packets. Not every device exposes a name, so unknown devices fall back to MAC or IP display.
+
 Import a pcap file for offline testing:
 
 ```bash
@@ -177,6 +181,7 @@ Data is stored as time buckets in SQLite:
 
 - `traffic_buckets`: WAN totals by bucket, direction, and protocol
 - `client_buckets`: LAN-client public traffic by bucket, client IP, client MAC, direction, and protocol
+- `client_names`: learned client names keyed by client IP and MAC
 
 ## Web UI and HTTP API
 
@@ -190,6 +195,7 @@ Then open:
 
 ```text
 http://<linux-server-ip>:8080
+http://<linux-server-ip>:8080/clients.html
 ```
 
 `-addr :8080` listens on all interfaces. Bind `127.0.0.1:8080` only when a reverse proxy or SSH tunnel will expose it.
@@ -222,7 +228,7 @@ Response contains:
 `/api/clients` returns:
 
 - `range`: UTC query range
-- `clients`: per-client upload/download totals sorted by total traffic
+- `clients`: per-client upload/download totals sorted by total traffic, including `display_name` and `name_source` when known
 - `breakdown`: per-client totals by direction and protocol
 
 The standalone `serve` command is suitable for historical queries against recently flushed SQLite bucket data.
@@ -244,6 +250,8 @@ data: {"timestamp":"2026-04-17T12:00:00Z","wan_ip":"203.0.113.10","wan_available
 
 The Web UI connects to `/api/live` as soon as the page loads. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.
 The live upload/download row is backed by `/api/live` and updates once per second from capture memory when the page is served by `capture -web-addr`.
+
+The client page at `/clients.html` has a full client table, client IP filtering, specified-date summaries, and a real-time client table driven by `/api/live`. The real-time client table is available only when the Web UI is served by `capture -web-addr`, because it uses in-memory per-second counters.
 
 ## systemd Service
 

@@ -48,6 +48,26 @@ select {
   border-bottom: 3px solid var(--ink);
 }
 
+.navLinks {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.navLinks a {
+  padding: 8px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  color: var(--ink);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.navLinks a[aria-current="page"] {
+  background: var(--ink);
+  color: #fff;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--muted);
@@ -83,10 +103,14 @@ h2 {
 
 .controls {
   display: grid;
-  grid-template-columns: 1fr 1.1fr 1.1fr 1.1fr auto auto;
+  grid-template-columns: 1.1fr 1.2fr 1.2fr auto auto;
   gap: 12px;
   margin: 18px 0;
   align-items: end;
+}
+
+.clientsControls {
+  grid-template-columns: 1fr 1fr 1.1fr 1.1fr 1.1fr auto auto;
 }
 
 label {
@@ -146,6 +170,10 @@ button:hover {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 12px;
+}
+
+.clientsMetrics {
+  grid-template-columns: repeat(4, 1fr);
 }
 
 .metric {
@@ -250,7 +278,7 @@ canvas {
 
 .grid {
   display: grid;
-  grid-template-columns: 1.35fr 1fr 0.85fr;
+  grid-template-columns: 1.2fr 0.8fr;
   gap: 18px;
 }
 
@@ -288,6 +316,11 @@ th {
   line-height: 1.6;
 }
 
+.notes a {
+  color: var(--ink);
+  font-weight: 800;
+}
+
 code {
   padding: 2px 5px;
   border: 1px solid var(--line);
@@ -319,6 +352,10 @@ code {
   .topbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .navLinks {
+    margin-left: 0;
   }
 
   h1 {

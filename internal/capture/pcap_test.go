@@ -73,3 +73,134 @@ func TestExtractPacketParsesIPv4TCPPacket(t *testing.T) {
 		t.Fatalf("unexpected byte length: %d", parsed.Bytes)
 	}
 }
+
+func TestExtractPacketLearnsDHCPHostname(t *testing.T) {
+	srcMAC := net.HardwareAddr{0, 17, 34, 51, 68, 85}
+	udp := &layers.UDP{
+		SrcPort: 68,
+		DstPort: 67,
+	}
+	ip := &layers.IPv4{
+		Version:  4,
+		TTL:      64,
+		Protocol: layers.IPProtocolUDP,
+		SrcIP:    net.IP{192, 168, 248, 22},
+		DstIP:    net.IP{255, 255, 255, 255},
+	}
+	if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
+		t.Fatalf("set checksum layer: %v", err)
+	}
+
+	dhcp := &layers.DHCPv4{
+		Operation:    layers.DHCPOpRequest,
+		HardwareType: layers.LinkTypeEthernet,
+		HardwareLen:  6,
+		Xid:          0x12345678,
+		ClientIP:     net.IP{192, 168, 248, 22},
+		ClientHWAddr: srcMAC,
+		Options: layers.DHCPOptions{
+			layers.NewDHCPOption(layers.DHCPOptMessageType, []byte{byte(layers.DHCPMsgTypeRequest)}),
+			layers.NewDHCPOption(layers.DHCPOptHostname, []byte("nas-box")),
+		},
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	err := gopacket.SerializeLayers(
+		buffer,
+		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+		&layers.Ethernet{
+			SrcMAC:       srcMAC,
+			DstMAC:       net.HardwareAddr{255, 255, 255, 255, 255, 255},
+			EthernetType: layers.EthernetTypeIPv4,
+		},
+		ip,
+		udp,
+		dhcp,
+	)
+	if err != nil {
+		t.Fatalf("serialize packet: %v", err)
+	}
+
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet.Metadata().CaptureInfo.Timestamp = time.Unix(100, 0)
+	packet.Metadata().CaptureInfo.Length = len(buffer.Bytes())
+
+	parsed, ok := ExtractPacket(packet)
+	if !ok {
+		t.Fatal("expected packet to parse")
+	}
+	if len(parsed.NameObservations) != 1 {
+		t.Fatalf("expected one name observation, got %#v", parsed.NameObservations)
+	}
+	observation := parsed.NameObservations[0]
+	if observation.Name != "nas-box" || observation.Source != "dhcp" {
+		t.Fatalf("unexpected observation name/source: %#v", observation)
+	}
+	if observation.IP != netip.MustParseAddr("192.168.248.22") || observation.MAC != "00:11:22:33:44:55" {
+		t.Fatalf("unexpected observation identity: %#v", observation)
+	}
+}
+
+func TestExtractPacketLearnsMDNSARecordName(t *testing.T) {
+	srcMAC := net.HardwareAddr{0, 17, 34, 51, 68, 85}
+	udp := &layers.UDP{
+		SrcPort: 5353,
+		DstPort: 5353,
+	}
+	ip := &layers.IPv4{
+		Version:  4,
+		TTL:      255,
+		Protocol: layers.IPProtocolUDP,
+		SrcIP:    net.IP{192, 168, 248, 22},
+		DstIP:    net.IP{224, 0, 0, 251},
+	}
+	if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
+		t.Fatalf("set checksum layer: %v", err)
+	}
+
+	dns := &layers.DNS{
+		QR: true,
+		Answers: []layers.DNSResourceRecord{
+			{
+				Name:  []byte("nas-box.local"),
+				Type:  layers.DNSTypeA,
+				Class: layers.DNSClassIN,
+				TTL:   120,
+				IP:    net.IP{192, 168, 248, 22},
+			},
+		},
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	err := gopacket.SerializeLayers(
+		buffer,
+		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+		&layers.Ethernet{
+			SrcMAC:       srcMAC,
+			DstMAC:       net.HardwareAddr{1, 0, 94, 0, 0, 251},
+			EthernetType: layers.EthernetTypeIPv4,
+		},
+		ip,
+		udp,
+		dns,
+	)
+	if err != nil {
+		t.Fatalf("serialize packet: %v", err)
+	}
+
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet.Metadata().CaptureInfo.Timestamp = time.Unix(100, 0)
+	packet.Metadata().CaptureInfo.Length = len(buffer.Bytes())
+
+	parsed, ok := ExtractPacket(packet)
+	if !ok {
+		t.Fatal("expected packet to parse")
+	}
+	if len(parsed.NameObservations) != 1 {
+		t.Fatalf("expected one name observation, got %#v", parsed.NameObservations)
+	}
+	observation := parsed.NameObservations[0]
+	if observation.Name != "nas-box" || observation.Source != "mdns" {
+		t.Fatalf("unexpected observation: %#v", observation)
+	}
+}

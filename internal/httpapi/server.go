@@ -243,6 +243,8 @@ type clientsResponse struct {
 }
 
 type clientSummaryRow struct {
+	DisplayName   string `json:"display_name"`
+	NameSource    string `json:"name_source"`
 	ClientIP      string `json:"client_ip"`
 	ClientMAC     string `json:"client_mac"`
 	UploadBytes   int64  `json:"upload_bytes"`
@@ -340,8 +342,10 @@ func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clie
 		summary := summaryByClient[clientKey]
 		if summary == nil {
 			summary = &clientSummaryRow{
-				ClientIP:  clientIP,
-				ClientMAC: row.Key.ClientMAC,
+				DisplayName: displayClientName(row.Name, clientIP, row.Key.ClientMAC),
+				NameSource:  row.NameSource,
+				ClientIP:    clientIP,
+				ClientMAC:   row.Key.ClientMAC,
 			}
 			summaryByClient[clientKey] = summary
 		}
@@ -399,6 +403,17 @@ func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clie
 	}
 
 	return response
+}
+
+func displayClientName(name, clientIP, clientMAC string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	if clientMAC != "" {
+		return clientMAC
+	}
+	return clientIP
 }
 
 func addDirectionBytes(totals *responseTotals, direction traffic.Direction, bytes int64) {

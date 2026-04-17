@@ -122,3 +122,76 @@ func (m *Meter) add(direction Direction, bytes int) {
 	counters.Packets++
 	m.counters[direction] = counters
 }
+
+type ClientCounters struct {
+	ClientIP      netip.Addr
+	ClientMAC     string
+	UploadBytes   int64
+	DownloadBytes int64
+	Packets       int64
+}
+
+type ClientMeterSnapshot struct {
+	Clients []ClientCounters
+}
+
+type clientMeterKey struct {
+	ip  netip.Addr
+	mac string
+}
+
+type ClientMeter struct {
+	mu       sync.Mutex
+	counters map[clientMeterKey]ClientCounters
+}
+
+func NewClientMeter() *ClientMeter {
+	return &ClientMeter{
+		counters: make(map[clientMeterKey]ClientCounters),
+	}
+}
+
+func (m *ClientMeter) AddPacket(client ClientTraffic, packet Packet) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := clientMeterKey{ip: client.ClientIP, mac: client.ClientMAC}
+	counters := m.counters[key]
+	counters.ClientIP = client.ClientIP
+	counters.ClientMAC = client.ClientMAC
+	switch client.Direction {
+	case DirectionUpload:
+		counters.UploadBytes += int64(packet.Bytes)
+	case DirectionDownload:
+		counters.DownloadBytes += int64(packet.Bytes)
+	}
+	counters.Packets++
+	m.counters[key] = counters
+}
+
+func (m *ClientMeter) SnapshotAndReset(topN int) ClientMeterSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rows := make([]ClientCounters, 0, len(m.counters))
+	for _, counters := range m.counters {
+		rows = append(rows, counters)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		left := rows[i].UploadBytes + rows[i].DownloadBytes
+		right := rows[j].UploadBytes + rows[j].DownloadBytes
+		if left != right {
+			return left > right
+		}
+		if rows[i].ClientIP != rows[j].ClientIP {
+			return rows[i].ClientIP.Less(rows[j].ClientIP)
+		}
+		return rows[i].ClientMAC < rows[j].ClientMAC
+	})
+	if topN > 0 && len(rows) > topN {
+		rows = rows[:topN]
+	}
+
+	m.counters = make(map[clientMeterKey]ClientCounters)
+	return ClientMeterSnapshot{Clients: rows}
+}

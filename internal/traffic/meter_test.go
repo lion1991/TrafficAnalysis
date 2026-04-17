@@ -59,6 +59,38 @@ func TestMeterSnapshotAndResetTracksTopConversations(t *testing.T) {
 	}
 }
 
+func TestClientMeterSnapshotsAndResetsPerClientTraffic(t *testing.T) {
+	meter := NewClientMeter()
+	clientIP := mustAddr("192.168.248.22")
+
+	meter.AddPacket(ClientTraffic{
+		ClientIP:  clientIP,
+		ClientMAC: "00:11:22:33:44:55",
+		Direction: DirectionUpload,
+	}, Packet{Bytes: 1024})
+	meter.AddPacket(ClientTraffic{
+		ClientIP:  clientIP,
+		ClientMAC: "00:11:22:33:44:55",
+		Direction: DirectionDownload,
+	}, Packet{Bytes: 2048})
+
+	snapshot := meter.SnapshotAndReset(10)
+	if len(snapshot.Clients) != 1 {
+		t.Fatalf("expected one client, got %#v", snapshot.Clients)
+	}
+	row := snapshot.Clients[0]
+	if row.ClientIP != clientIP || row.ClientMAC != "00:11:22:33:44:55" {
+		t.Fatalf("unexpected client identity: %#v", row)
+	}
+	if row.UploadBytes != 1024 || row.DownloadBytes != 2048 || row.Packets != 2 {
+		t.Fatalf("unexpected counters: %#v", row)
+	}
+
+	if next := meter.SnapshotAndReset(10); len(next.Clients) != 0 {
+		t.Fatalf("expected meter reset, got %#v", next.Clients)
+	}
+}
+
 func mustAddr(s string) netip.Addr {
 	return netip.MustParseAddr(s)
 }

@@ -2,7 +2,6 @@ const elements = {
   preset: document.querySelector("#preset"),
   from: document.querySelector("#from"),
   to: document.querySelector("#to"),
-  clientIP: document.querySelector("#clientIP"),
   autoRefresh: document.querySelector("#autoRefresh"),
   queryButton: document.querySelector("#queryButton"),
   status: document.querySelector("#status"),
@@ -17,7 +16,6 @@ const elements = {
   livePackets: document.querySelector("#livePackets"),
   rangeText: document.querySelector("#rangeText"),
   chart: document.querySelector("#trafficChart"),
-  clientsBody: document.querySelector("#clientsBody"),
   breakdownBody: document.querySelector("#breakdownBody"),
 };
 
@@ -43,14 +41,6 @@ function buildURL() {
   return `/api/traffic?${buildRangeParams().toString()}`;
 }
 
-function buildClientsURL() {
-  const params = buildRangeParams();
-  if (elements.clientIP.value.trim()) {
-    params.set("client_ip", elements.clientIP.value.trim());
-  }
-  return `/api/clients?${params.toString()}`;
-}
-
 function buildRangeParams() {
   const params = new URLSearchParams();
   if (elements.preset.value === "custom") {
@@ -71,20 +61,12 @@ async function loadTraffic() {
   elements.status.style.background = "var(--accent)";
 
   try {
-    const [trafficResponse, clientsResponse] = await Promise.all([
-      fetch(buildURL(), { headers: { Accept: "application/json" } }),
-      fetch(buildClientsURL(), { headers: { Accept: "application/json" } }),
-    ]);
+    const trafficResponse = await fetch(buildURL(), { headers: { Accept: "application/json" } });
     if (!trafficResponse.ok) {
       throw new Error(await trafficResponse.text());
     }
     const data = await trafficResponse.json();
     renderTraffic(data);
-    if (clientsResponse.ok) {
-      renderClients(await clientsResponse.json());
-    } else {
-      renderClients({ clients: [] });
-    }
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";
   } catch (error) {
@@ -92,26 +74,6 @@ async function loadTraffic() {
     elements.status.style.background = "#f1b1aa";
     console.error(error);
   }
-}
-
-function renderClients(data) {
-  const rows = data.clients || [];
-  if (rows.length === 0) {
-    elements.clientsBody.innerHTML = `<tr><td colspan="5">暂无客户端数据</td></tr>`;
-    return;
-  }
-
-  elements.clientsBody.innerHTML = rows
-    .map((row) => `
-      <tr>
-        <td>${escapeHTML(row.client_ip)}</td>
-        <td>${escapeHTML(row.client_mac || "-")}</td>
-        <td>${formatBytes(row.upload_bytes)}</td>
-        <td>${formatBytes(row.download_bytes)}</td>
-        <td>${Number(row.packets || 0).toLocaleString()}</td>
-      </tr>
-    `)
-    .join("");
 }
 
 function renderTraffic(data) {
@@ -308,11 +270,6 @@ function startPolling(intervalMs) {
 }
 
 elements.queryButton.addEventListener("click", loadTraffic);
-elements.clientIP.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    loadTraffic();
-  }
-});
 elements.preset.addEventListener("change", () => {
   syncControls();
   loadTraffic();

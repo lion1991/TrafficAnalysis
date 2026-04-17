@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>客户端流量 - TrafficAnalysis</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Client Traffic Console</p>
+          <h1>客户端流量</h1>
+        </div>
+        <nav class="navLinks" aria-label="页面导航">
+          <a href="/">总览</a>
+          <a href="/clients.html" aria-current="page">客户端</a>
+        </nav>
+        <div class="status" id="status">等待查询</div>
+      </section>
+
+      <section class="controls clientsControls" aria-label="客户端查询条件">
+        <label>
+          时间范围
+          <select id="preset">
+            <option value="1h">最近 1 小时</option>
+            <option value="6h">最近 6 小时</option>
+            <option value="24h">最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+            <option value="date">指定日期</option>
+            <option value="custom">自定义范围</option>
+          </select>
+        </label>
+        <label>
+          日期
+          <input id="date" type="date" />
+        </label>
+        <label>
+          开始
+          <input id="from" type="text" placeholder="2026-04-17 00:00" />
+        </label>
+        <label>
+          结束
+          <input id="to" type="text" placeholder="2026-04-18 00:00" />
+        </label>
+        <label>
+          客户端 IP
+          <input id="clientIP" type="text" placeholder="192.168.248.22" />
+        </label>
+        <label class="checkbox">
+          <input id="autoRefresh" type="checkbox" />
+          自动刷新
+        </label>
+        <button id="queryButton" type="button">查询</button>
+      </section>
+
+      <section class="metrics clientsMetrics" aria-label="客户端汇总">
+        <article class="metric upload">
+          <span>客户端上传</span>
+          <strong id="uploadTotal">0 B</strong>
+        </article>
+        <article class="metric download">
+          <span>客户端下载</span>
+          <strong id="downloadTotal">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>客户端数量</span>
+          <strong id="clientTotal">0</strong>
+        </article>
+        <article class="metric">
+          <span>包数量</span>
+          <strong id="packetTotal">0</strong>
+        </article>
+      </section>
+
+      <section class="chartPanel" aria-label="实时客户端流量">
+        <div class="chartTitle">
+          <h2>实时客户端</h2>
+          <p>每秒更新，来自 LAN 镜像口内存计数</p>
+        </div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>客户端 IP</th>
+                <th>MAC</th>
+                <th>上传速率</th>
+                <th>下载速率</th>
+                <th>包</th>
+              </tr>
+            </thead>
+            <tbody id="liveClientsBody">
+              <tr><td colspan="6">等待实时数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="chartPanel" aria-label="客户端流量汇总">
+        <div class="chartTitle">
+          <h2>客户端汇总</h2>
+          <p id="rangeText">-</p>
+        </div>
+        <div class="tableWrap wideTable">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>来源</th>
+                <th>客户端 IP</th>
+                <th>MAC</th>
+                <th>上传</th>
+                <th>下载</th>
+                <th>总计</th>
+                <th>包</th>
+              </tr>
+            </thead>
+            <tbody id="clientsBody">
+              <tr><td colspan="8">暂无数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/clients.js" defer></script>
+  </body>
+</html>

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -234,10 +235,13 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		consoleMeter = traffic.NewMeter()
 	}
 	var webMeter *traffic.Meter
+	var webClientMeter *traffic.ClientMeter
 	var liveHub *httpapi.LiveHub
 	var webErrCh <-chan error
+	nameCache := newClientNameCache()
 	if web.enabled {
 		webMeter = traffic.NewMeter()
+		webClientMeter = traffic.NewClientMeter()
 		liveHub = httpapi.NewLiveHub()
 		server := &http.Server{
 			Addr: web.addr,
@@ -284,8 +288,15 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	if lanRunner != nil {
 		go func() {
 			errCh <- lanRunner(runCtx, func(packet traffic.Packet) {
+				if len(packet.NameObservations) > 0 {
+					nameCache.Observe(packet.NameObservations)
+					_ = st.UpsertClientNames(context.Background(), packet.NameObservations)
+				}
 				if client, ok := clientClassifier.Classify(packet); ok {
 					clientAggregator.Add(packet, client)
+					if webClientMeter != nil {
+						webClientMeter.AddPacket(client, packet)
+					}
 				}
 			})
 		}()
@@ -340,7 +351,15 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			fmt.Println(formatLiveSnapshot(now.UTC(), wanIP, ok, output.interval, consoleMeter.SnapshotAndResetDetailed(3)))
 		case now := <-webLiveC:
 			wanIP, ok := manager.Current()
-			liveHub.Publish(buildHTTPLiveSnapshot(now.UTC(), wanIP, ok, web.liveInterval, webMeter.SnapshotAndResetDetailed(0)))
+			liveHub.Publish(buildHTTPLiveSnapshot(
+				now.UTC(),
+				wanIP,
+				ok,
+				web.liveInterval,
+				webMeter.SnapshotAndResetDetailed(0),
+				webClientMeter.SnapshotAndReset(100),
+				nameCache.Resolve,
+			))
 		}
 	}
 }
@@ -714,7 +733,15 @@ func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval ti
 	return line
 }
 
-func buildHTTPLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval time.Duration, snapshot traffic.MeterSnapshot) httpapi.LiveSnapshot {
+func buildHTTPLiveSnapshot(
+	now time.Time,
+	wanIP netip.Addr,
+	wanOK bool,
+	interval time.Duration,
+	snapshot traffic.MeterSnapshot,
+	clientSnapshot traffic.ClientMeterSnapshot,
+	resolveClientName func(netip.Addr, string) (string, string),
+) httpapi.LiveSnapshot {
 	stats := snapshot.Directions
 	upload := stats[traffic.DirectionUpload]
 	download := stats[traffic.DirectionDownload]
@@ -727,7 +754,7 @@ func buildHTTPLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval
 		wanText = wanIP.String()
 	}
 
-	return httpapi.LiveSnapshot{
+	result := httpapi.LiveSnapshot{
 		Timestamp:       now.UTC().Format(time.RFC3339),
 		WANIP:           wanText,
 		WANAvailable:    wanOK,
@@ -745,6 +772,24 @@ func buildHTTPLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval
 			DownloadBPS: rateBytes(download.Bytes, interval),
 		},
 	}
+
+	for _, client := range clientSnapshot.Clients {
+		name := ""
+		if resolveClientName != nil {
+			name, _ = resolveClientName(client.ClientIP, client.ClientMAC)
+		}
+		result.Clients = append(result.Clients, httpapi.LiveClient{
+			DisplayName:   displayClientName(name, client.ClientIP.String(), client.ClientMAC),
+			ClientIP:      client.ClientIP.String(),
+			ClientMAC:     client.ClientMAC,
+			UploadBPS:     rateBytes(client.UploadBytes, interval),
+			DownloadBPS:   rateBytes(client.DownloadBytes, interval),
+			UploadBytes:   client.UploadBytes,
+			DownloadBytes: client.DownloadBytes,
+			Packets:       client.Packets,
+		})
+	}
+	return result
 }
 
 func formatTopConversations(conversations []traffic.ConversationCounters) string {
@@ -773,6 +818,58 @@ func formatEndpoint(addr netip.Addr, port uint16) string {
 		return fmt.Sprintf("[%s]:%d", addr, port)
 	}
 	return fmt.Sprintf("%s:%d", addr, port)
+}
+
+type cachedClientName struct {
+	name   string
+	source string
+}
+
+type clientNameCache struct {
+	mu    sync.RWMutex
+	names map[string]cachedClientName
+}
+
+func newClientNameCache() *clientNameCache {
+	return &clientNameCache{names: make(map[string]cachedClientName)}
+}
+
+func (c *clientNameCache) Observe(observations []traffic.NameObservation) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, observation := range observations {
+		if !observation.IP.IsValid() || observation.MAC == "" || observation.Name == "" {
+			continue
+		}
+		c.names[clientNameKey(observation.IP, observation.MAC)] = cachedClientName{
+			name:   observation.Name,
+			source: observation.Source,
+		}
+	}
+}
+
+func (c *clientNameCache) Resolve(ip netip.Addr, mac string) (string, string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	name := c.names[clientNameKey(ip, mac)]
+	return name.name, name.source
+}
+
+func clientNameKey(ip netip.Addr, mac string) string {
+	return ip.String() + "\x00" + mac
+}
+
+func displayClientName(name, clientIP, clientMAC string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	if clientMAC != "" {
+		return clientMAC
+	}
+	return clientIP
 }
 
 func shouldTriggerWANRefresh(packet traffic.Packet, direction traffic.Direction) bool {

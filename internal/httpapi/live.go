@@ -19,13 +19,25 @@ type LiveRates struct {
 	DownloadBPS int64 `json:"download_bps"`
 }
 
+type LiveClient struct {
+	DisplayName   string `json:"display_name"`
+	ClientIP      string `json:"client_ip"`
+	ClientMAC     string `json:"client_mac"`
+	UploadBPS     int64  `json:"upload_bps"`
+	DownloadBPS   int64  `json:"download_bps"`
+	UploadBytes   int64  `json:"upload_bytes"`
+	DownloadBytes int64  `json:"download_bytes"`
+	Packets       int64  `json:"packets"`
+}
+
 type LiveSnapshot struct {
-	Timestamp       string     `json:"timestamp"`
-	WANIP           string     `json:"wan_ip"`
-	WANAvailable    bool       `json:"wan_available"`
-	IntervalSeconds float64    `json:"interval_seconds"`
-	Totals          LiveTotals `json:"totals"`
-	Rates           LiveRates  `json:"rates"`
+	Timestamp       string       `json:"timestamp"`
+	WANIP           string       `json:"wan_ip"`
+	WANAvailable    bool         `json:"wan_available"`
+	IntervalSeconds float64      `json:"interval_seconds"`
+	Totals          LiveTotals   `json:"totals"`
+	Rates           LiveRates    `json:"rates"`
+	Clients         []LiveClient `json:"clients"`
 }
 
 type LiveSource interface {

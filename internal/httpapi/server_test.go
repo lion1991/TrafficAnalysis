@@ -164,7 +164,9 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 					Direction: traffic.DirectionUpload,
 					Protocol:  "tcp",
 				},
-				Value: traffic.BucketValue{Bytes: 1200, Packets: 3},
+				Value:      traffic.BucketValue{Bytes: 1200, Packets: 3},
+				Name:       "nas-box",
+				NameSource: "dhcp",
 			},
 			{
 				Key: traffic.ClientBucketKey{
@@ -174,7 +176,9 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 					Direction: traffic.DirectionDownload,
 					Protocol:  "udp",
 				},
-				Value: traffic.BucketValue{Bytes: 3400, Packets: 4},
+				Value:      traffic.BucketValue{Bytes: 3400, Packets: 4},
+				Name:       "nas-box",
+				NameSource: "dhcp",
 			},
 			{
 				Key: traffic.ClientBucketKey{
@@ -184,7 +188,9 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 					Direction: traffic.DirectionDownload,
 					Protocol:  "tcp",
 				},
-				Value: traffic.BucketValue{Bytes: 5600, Packets: 5},
+				Value:      traffic.BucketValue{Bytes: 5600, Packets: 5},
+				Name:       "laptop",
+				NameSource: "mdns",
 			},
 		},
 	}
@@ -211,8 +217,14 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 	if body.Clients[0].ClientIP != "192.168.248.23" || body.Clients[0].DownloadBytes != 5600 {
 		t.Fatalf("expected clients sorted by total bytes descending, got %#v", body.Clients)
 	}
+	if body.Clients[0].DisplayName != "laptop" || body.Clients[0].NameSource != "mdns" {
+		t.Fatalf("expected client display name from mdns, got %#v", body.Clients[0])
+	}
 	if body.Clients[1].ClientIP != "192.168.248.22" || body.Clients[1].UploadBytes != 1200 || body.Clients[1].DownloadBytes != 3400 {
 		t.Fatalf("unexpected second client: %#v", body.Clients[1])
+	}
+	if body.Clients[1].DisplayName != "nas-box" || body.Clients[1].NameSource != "dhcp" {
+		t.Fatalf("expected client display name from dhcp, got %#v", body.Clients[1])
 	}
 	if len(body.Breakdown) != 3 {
 		t.Fatalf("expected 3 breakdown rows, got %d: %#v", len(body.Breakdown), body.Breakdown)
@@ -282,6 +294,16 @@ func TestLiveSSEStreamsPublishedSnapshots(t *testing.T) {
 			UploadBPS:   1024,
 			DownloadBPS: 2048,
 		},
+		Clients: []LiveClient{
+			{
+				DisplayName: "nas-box",
+				ClientIP:    "192.168.248.22",
+				ClientMAC:   "00:11:22:33:44:55",
+				UploadBPS:   512,
+				DownloadBPS: 1024,
+				Packets:     2,
+			},
+		},
 	})
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -304,6 +326,9 @@ func TestLiveSSEStreamsPublishedSnapshots(t *testing.T) {
 	if snapshot.WANIP != "42.103.52.33" || snapshot.Totals.UploadBytes != 1024 || snapshot.Rates.DownloadBPS != 2048 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
+	if len(snapshot.Clients) != 1 || snapshot.Clients[0].DisplayName != "nas-box" || snapshot.Clients[0].DownloadBPS != 1024 {
+		t.Fatalf("unexpected live clients: %#v", snapshot.Clients)
+	}
 }
 
 func TestLiveSSEReturnsUnavailableWithoutLiveSource(t *testing.T) {
@@ -325,5 +350,19 @@ func TestWebAppStartsLiveStreamOnLoad(t *testing.T) {
 
 	if !strings.Contains(string(data), "syncControls();\nstartLiveStream();\nloadTraffic();") {
 		t.Fatal("expected web app to connect /api/live when the page loads")
+	}
+}
+
+func TestClientsPageIsServed(t *testing.T) {
+	handler := NewHandler(&fakeBucketQueryer{}, Options{Location: time.UTC})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/clients.html", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "客户端流量") {
+		t.Fatalf("expected clients page, got %q", rec.Body.String())
 	}
 }

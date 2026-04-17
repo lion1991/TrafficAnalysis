@@ -17,8 +17,10 @@ type BucketRow struct {
 }
 
 type ClientBucketRow struct {
-	Key   traffic.ClientBucketKey
-	Value traffic.BucketValue
+	Key        traffic.ClientBucketKey
+	Value      traffic.BucketValue
+	Name       string
+	NameSource string
 }
 
 type SQLiteStore struct {
@@ -79,6 +81,16 @@ CREATE TABLE IF NOT EXISTS client_buckets (
 );
 CREATE INDEX IF NOT EXISTS idx_client_buckets_start ON client_buckets(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_client_buckets_client_ip ON client_buckets(client_ip, bucket_start);
+CREATE TABLE IF NOT EXISTS client_names (
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	name TEXT NOT NULL,
+	source TEXT NOT NULL,
+	first_seen INTEGER NOT NULL,
+	last_seen INTEGER NOT NULL,
+	PRIMARY KEY (client_ip, client_mac)
+);
+CREATE INDEX IF NOT EXISTS idx_client_names_mac ON client_names(client_mac);
 `)
 	return err
 }
@@ -165,6 +177,55 @@ ON CONFLICT(bucket_start, client_ip, client_mac, direction, protocol) DO UPDATE 
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) UpsertClientNames(ctx context.Context, names []traffic.NameObservation) error {
+	if len(names) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO client_names (client_ip, client_mac, name, source, first_seen, last_seen)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(client_ip, client_mac) DO UPDATE SET
+	name = excluded.name,
+	source = excluded.source,
+	last_seen = MAX(client_names.last_seen, excluded.last_seen);
+`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, name := range names {
+		if !name.IP.IsValid() || name.MAC == "" || name.Name == "" {
+			continue
+		}
+		timestamp := name.Timestamp.UTC()
+		if timestamp.IsZero() {
+			timestamp = time.Now().UTC()
+		}
+		_, err := stmt.ExecContext(
+			ctx,
+			name.IP.String(),
+			name.MAC,
+			name.Name,
+			name.Source,
+			timestamp.Unix(),
+			timestamp.Unix(),
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) QueryBuckets(ctx context.Context, from, to time.Time) ([]BucketRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT bucket_start, direction, protocol, bytes, packets
@@ -208,16 +269,20 @@ ORDER BY bucket_start ASC, direction ASC, protocol ASC;
 
 func (s *SQLiteStore) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]ClientBucketRow, error) {
 	const queryAll = `
-SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
-FROM client_buckets
-WHERE bucket_start >= ? AND bucket_start < ?
-ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protocol ASC;
+SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
+       COALESCE(cn.name, ''), COALESCE(cn.source, '')
+FROM client_buckets cb
+LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
+WHERE cb.bucket_start >= ? AND cb.bucket_start < ?
+ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 	const queryClient = `
-SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
-FROM client_buckets
-WHERE bucket_start >= ? AND bucket_start < ? AND client_ip = ?
-ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protocol ASC;
+SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
+       COALESCE(cn.name, ''), COALESCE(cn.source, '')
+FROM client_buckets cb
+LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
+WHERE cb.bucket_start >= ? AND cb.bucket_start < ? AND cb.client_ip = ?
+ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 
 	var rows *sql.Rows
@@ -241,7 +306,9 @@ ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protoco
 		var protocol string
 		var bytes int64
 		var packets int64
-		if err := rows.Scan(&startUnix, &clientIPText, &clientMAC, &direction, &protocol, &bytes, &packets); err != nil {
+		var name string
+		var nameSource string
+		if err := rows.Scan(&startUnix, &clientIPText, &clientMAC, &direction, &protocol, &bytes, &packets, &name, &nameSource); err != nil {
 			return nil, err
 		}
 
@@ -261,6 +328,8 @@ ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protoco
 				Bytes:   bytes,
 				Packets: packets,
 			},
+			Name:       name,
+			NameSource: nameSource,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -263,6 +263,20 @@ func TestBuildHTTPLiveSnapshotIncludesWANRatesAndCounters(t *testing.T) {
 				traffic.DirectionOther:    {Bytes: 128, Packets: 1},
 			},
 		},
+		traffic.ClientMeterSnapshot{
+			Clients: []traffic.ClientCounters{
+				{
+					ClientIP:      netip.MustParseAddr("192.168.248.22"),
+					ClientMAC:     "00:11:22:33:44:55",
+					UploadBytes:   1024,
+					DownloadBytes: 2048,
+					Packets:       4,
+				},
+			},
+		},
+		func(ip netip.Addr, mac string) (string, string) {
+			return "nas-box", "dhcp"
+		},
 	)
 
 	if snapshot.Timestamp != "2026-04-17T12:00:00Z" {
@@ -279,6 +293,9 @@ func TestBuildHTTPLiveSnapshotIncludesWANRatesAndCounters(t *testing.T) {
 	}
 	if snapshot.Rates.UploadBPS != 1024 || snapshot.Rates.DownloadBPS != 2048 {
 		t.Fatalf("unexpected rates: %#v", snapshot.Rates)
+	}
+	if len(snapshot.Clients) != 1 || snapshot.Clients[0].DisplayName != "nas-box" || snapshot.Clients[0].DownloadBPS != 1024 {
+		t.Fatalf("unexpected live clients: %#v", snapshot.Clients)
 	}
 }
 
