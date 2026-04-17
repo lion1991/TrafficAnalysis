@@ -431,7 +431,9 @@ code {
 
 @media (max-width: 980px) {
   .controls,
+  .clientsControls,
   .metrics,
+  .clientsMetrics,
   .livePanel,
   .grid {
     grid-template-columns: 1fr 1fr;
@@ -463,7 +465,9 @@ code {
   }
 
   .controls,
+  .clientsControls,
   .metrics,
+  .clientsMetrics,
   .livePanel,
   .grid {
     grid-template-columns: 1fr;
