@@ -146,6 +146,24 @@ func TestResolveLiveOutputOptionsHonorsQuietAndIntervalOverride(t *testing.T) {
 	}
 }
 
+func TestResolveCaptureWebConfigEnablesSSEAtOneSecondInterval(t *testing.T) {
+	resolved := resolveCaptureWebConfig("")
+	if resolved.enabled {
+		t.Fatal("expected empty web address to disable capture web UI")
+	}
+
+	resolved = resolveCaptureWebConfig(":8080")
+	if !resolved.enabled {
+		t.Fatal("expected web address to enable capture web UI")
+	}
+	if resolved.addr != ":8080" {
+		t.Fatalf("unexpected addr: %s", resolved.addr)
+	}
+	if resolved.liveInterval != time.Second {
+		t.Fatalf("unexpected live interval: %s", resolved.liveInterval)
+	}
+}
+
 func TestParseQueryRangeSupportsDateShortcut(t *testing.T) {
 	location := time.FixedZone("TEST", 8*60*60)
 	from, to, err := parseQueryRangeWithClock(queryRangeOptions{date: "2026-04-17"}, time.Time{}, location)
@@ -229,6 +247,38 @@ func TestShouldNotTriggerWANRefreshForLANOrPrivateTraffic(t *testing.T) {
 	}
 	if shouldTriggerWANRefresh(packet, traffic.DirectionOther) {
 		t.Fatal("expected private/multicast traffic not to trigger WAN refresh")
+	}
+}
+
+func TestBuildHTTPLiveSnapshotIncludesWANRatesAndCounters(t *testing.T) {
+	snapshot := buildHTTPLiveSnapshot(
+		time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC),
+		netip.MustParseAddr("42.103.52.33"),
+		true,
+		2*time.Second,
+		traffic.MeterSnapshot{
+			Directions: map[traffic.Direction]traffic.DirectionCounters{
+				traffic.DirectionUpload:   {Bytes: 2048, Packets: 2},
+				traffic.DirectionDownload: {Bytes: 4096, Packets: 3},
+				traffic.DirectionOther:    {Bytes: 128, Packets: 1},
+			},
+		},
+	)
+
+	if snapshot.Timestamp != "2026-04-17T12:00:00Z" {
+		t.Fatalf("unexpected timestamp: %s", snapshot.Timestamp)
+	}
+	if snapshot.WANIP != "42.103.52.33" || !snapshot.WANAvailable {
+		t.Fatalf("unexpected WAN fields: %#v", snapshot)
+	}
+	if snapshot.Totals.UploadBytes != 2048 || snapshot.Totals.DownloadBytes != 4096 || snapshot.Totals.OtherBytes != 128 {
+		t.Fatalf("unexpected totals: %#v", snapshot.Totals)
+	}
+	if snapshot.Totals.Packets != 6 {
+		t.Fatalf("unexpected packets: %d", snapshot.Totals.Packets)
+	}
+	if snapshot.Rates.UploadBPS != 1024 || snapshot.Rates.DownloadBPS != 2048 {
+		t.Fatalf("unexpected rates: %#v", snapshot.Rates)
 	}
 }
 

@@ -79,6 +79,18 @@ Start live capture:
 sudo ./trafficanalysis capture -config config.json
 ```
 
+Start live capture with the built-in Web UI and live SSE stream:
+
+```bash
+sudo ./trafficanalysis capture -config config.json -web-addr :8080
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080
+```
+
 During capture, the process prints a live line every `live_seconds` by default:
 
 ```text
@@ -151,7 +163,7 @@ Data is stored as time buckets in SQLite. The first version stores totals by buc
 
 ## Web UI and HTTP API
 
-Start the built-in Web UI:
+Start the built-in Web UI for historical SQLite queries:
 
 ```bash
 ./trafficanalysis serve -config config.json -addr :8080
@@ -186,4 +198,20 @@ Response contains:
 - `series`: bucketed upload/download/lan/other/unknown values for charting
 - `breakdown`: totals by direction and protocol
 
-The Web UI can auto-refresh by polling the API. This is suitable for watching recently flushed SQLite bucket data. It is not a true live stream from the capture process memory; for sub-second live display, add a capture-side SSE or WebSocket endpoint.
+The standalone `serve` command is suitable for historical queries against recently flushed SQLite bucket data.
+
+Live SSE API is available when Web UI is started from the capture process:
+
+```bash
+sudo ./trafficanalysis capture -config config.json -web-addr :8080
+curl -N http://127.0.0.1:8080/api/live
+```
+
+`GET /api/live` streams one JSON snapshot per second:
+
+```text
+event: snapshot
+data: {"timestamp":"2026-04-17T12:00:00Z","wan_ip":"203.0.113.10","wan_available":true,"interval_seconds":1,"totals":{"upload_bytes":1024,"download_bytes":2048,"lan_bytes":0,"other_bytes":0,"unknown_bytes":0,"packets":8},"rates":{"upload_bps":1024,"download_bps":2048}}
+```
+
+The Web UI auto-refresh switch uses `/api/live` first. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.

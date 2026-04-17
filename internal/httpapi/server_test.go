@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -156,5 +157,82 @@ func TestStaticUIIsServedAtRoot(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "TrafficAnalysis") {
 		t.Fatalf("expected UI shell, got %q", rec.Body.String())
+	}
+}
+
+func TestLiveSSEStreamsPublishedSnapshots(t *testing.T) {
+	hub := NewLiveHub()
+	handler := NewHandler(&fakeBucketQueryer{}, Options{
+		Location:   time.UTC,
+		LiveSource: hub,
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/live", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("connect live SSE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
+		t.Fatalf("expected event stream, got %q", contentType)
+	}
+
+	hub.Publish(LiveSnapshot{
+		Timestamp:       "2026-04-17T12:00:00Z",
+		WANIP:           "42.103.52.33",
+		WANAvailable:    true,
+		IntervalSeconds: 1,
+		Totals: LiveTotals{
+			UploadBytes:   1024,
+			DownloadBytes: 2048,
+			Packets:       3,
+		},
+		Rates: LiveRates{
+			UploadBPS:   1024,
+			DownloadBPS: 2048,
+		},
+	})
+
+	scanner := bufio.NewScanner(resp.Body)
+	var dataLine string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			dataLine = strings.TrimPrefix(line, "data: ")
+			break
+		}
+	}
+	if dataLine == "" {
+		t.Fatal("expected SSE data line")
+	}
+
+	var snapshot LiveSnapshot
+	if err := json.Unmarshal([]byte(dataLine), &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.WANIP != "42.103.52.33" || snapshot.Totals.UploadBytes != 1024 || snapshot.Rates.DownloadBPS != 2048 {
+		t.Fatalf("unexpected snapshot: %#v", snapshot)
+	}
+}
+
+func TestLiveSSEReturnsUnavailableWithoutLiveSource(t *testing.T) {
+	handler := NewHandler(&fakeBucketQueryer{}, Options{Location: time.UTC})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/live", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }

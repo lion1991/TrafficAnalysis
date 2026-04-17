@@ -77,6 +77,7 @@ func runCapture(args []string) error {
 	live := fs.Bool("live", true, "print live traffic stats while capturing")
 	quiet := fs.Bool("quiet", false, "disable live traffic stats")
 	liveInterval := fs.String("live-interval", "", "live stats interval, such as 2s or 10s")
+	webAddr := fs.String("web-addr", "", "optional HTTP listen address for Web UI and /api/live SSE, such as :8080")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func runCapture(args []string) error {
 			SnapshotLen: cfg.SnapshotLen,
 			Promiscuous: cfg.Promiscuous,
 		}, handler)
-	})
+	}, resolveCaptureWebConfig(*webAddr))
 }
 
 func runReadPCAP(args []string) error {
@@ -138,7 +139,7 @@ func runReadPCAP(args []string) error {
 
 	return runCaptureToStore(context.Background(), cfg, output, func(ctx context.Context, handler capture.PacketHandler) error {
 		return capture.RunFile(ctx, *pcapPath, cfg.BPF, handler)
-	})
+	}, resolvedCaptureWebConfig{})
 }
 
 type captureRunner func(context.Context, capture.PacketHandler) error
@@ -153,6 +154,12 @@ type captureOutputConfig struct {
 type resolvedCaptureOutputConfig struct {
 	enabled  bool
 	interval time.Duration
+}
+
+type resolvedCaptureWebConfig struct {
+	enabled      bool
+	addr         string
+	liveInterval time.Duration
 }
 
 func resolveCaptureOutputConfig(cfg captureOutputConfig) (resolvedCaptureOutputConfig, error) {
@@ -174,7 +181,18 @@ func resolveCaptureOutputConfig(cfg captureOutputConfig) (resolvedCaptureOutputC
 	return resolvedCaptureOutputConfig{enabled: true, interval: interval}, nil
 }
 
-func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCaptureOutputConfig, runner captureRunner) error {
+func resolveCaptureWebConfig(addr string) resolvedCaptureWebConfig {
+	if addr == "" {
+		return resolvedCaptureWebConfig{}
+	}
+	return resolvedCaptureWebConfig{
+		enabled:      true,
+		addr:         addr,
+		liveInterval: time.Second,
+	}
+}
+
+func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCaptureOutputConfig, runner captureRunner, web resolvedCaptureWebConfig) error {
 	st, err := store.OpenSQLite(ctx, cfg.Database)
 	if err != nil {
 		return err
@@ -196,7 +214,35 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	}
 	classifier := traffic.NewWANClassifierWithLocalNetworks(manager.Current, localNetworks)
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
-	meter := traffic.NewMeter()
+
+	var consoleMeter *traffic.Meter
+	if output.enabled {
+		consoleMeter = traffic.NewMeter()
+	}
+	var webMeter *traffic.Meter
+	var liveHub *httpapi.LiveHub
+	var webErrCh <-chan error
+	if web.enabled {
+		webMeter = traffic.NewMeter()
+		liveHub = httpapi.NewLiveHub()
+		server := &http.Server{
+			Addr: web.addr,
+			Handler: httpapi.NewHandler(st, httpapi.Options{
+				LiveSource: liveHub,
+			}),
+		}
+		errCh := make(chan error, 1)
+		webErrCh = errCh
+		go func() {
+			errCh <- server.ListenAndServe()
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = server.Shutdown(shutdownCtx)
+		}()
+		fmt.Printf("web UI listening on http://%s live_sse=/api/live\n", displayListenAddr(web.addr))
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -206,7 +252,12 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			if shouldTriggerWANRefresh(packet, direction) {
 				manager.RequestRefresh()
 			}
-			meter.AddPacket(direction, packet)
+			if consoleMeter != nil {
+				consoleMeter.AddPacket(direction, packet)
+			}
+			if webMeter != nil {
+				webMeter.AddPacket(direction, packet)
+			}
 			if direction == traffic.DirectionLAN && cfg.IgnoreLAN {
 				return
 			}
@@ -226,11 +277,27 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		fmt.Printf("capture started: interface=%s database=%s live_interval=%s\n", cfg.Interface, cfg.Database, output.interval)
 	}
 
+	var webLiveTicker *time.Ticker
+	var webLiveC <-chan time.Time
+	if web.enabled {
+		webLiveTicker = time.NewTicker(web.liveInterval)
+		defer webLiveTicker.Stop()
+		webLiveC = webLiveTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return flushAll(context.Background(), st, aggregator)
 		case err := <-errCh:
+			if flushErr := flushAll(context.Background(), st, aggregator); flushErr != nil {
+				return flushErr
+			}
+			return err
+		case err := <-webErrCh:
+			if errors.Is(err, http.ErrServerClosed) {
+				continue
+			}
 			if flushErr := flushAll(context.Background(), st, aggregator); flushErr != nil {
 				return flushErr
 			}
@@ -241,7 +308,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			}
 		case now := <-liveC:
 			wanIP, ok := manager.Current()
-			fmt.Println(formatLiveSnapshot(now.UTC(), wanIP, ok, output.interval, meter.SnapshotAndResetDetailed(3)))
+			fmt.Println(formatLiveSnapshot(now.UTC(), wanIP, ok, output.interval, consoleMeter.SnapshotAndResetDetailed(3)))
+		case now := <-webLiveC:
+			wanIP, ok := manager.Current()
+			liveHub.Publish(buildHTTPLiveSnapshot(now.UTC(), wanIP, ok, web.liveInterval, webMeter.SnapshotAndResetDetailed(0)))
 		}
 	}
 }
@@ -609,6 +679,39 @@ func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval ti
 	return line
 }
 
+func buildHTTPLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval time.Duration, snapshot traffic.MeterSnapshot) httpapi.LiveSnapshot {
+	stats := snapshot.Directions
+	upload := stats[traffic.DirectionUpload]
+	download := stats[traffic.DirectionDownload]
+	lan := stats[traffic.DirectionLAN]
+	other := stats[traffic.DirectionOther]
+	unknown := stats[traffic.DirectionUnknown]
+
+	wanText := ""
+	if wanOK {
+		wanText = wanIP.String()
+	}
+
+	return httpapi.LiveSnapshot{
+		Timestamp:       now.UTC().Format(time.RFC3339),
+		WANIP:           wanText,
+		WANAvailable:    wanOK,
+		IntervalSeconds: interval.Seconds(),
+		Totals: httpapi.LiveTotals{
+			UploadBytes:   upload.Bytes,
+			DownloadBytes: download.Bytes,
+			LANBytes:      lan.Bytes,
+			OtherBytes:    other.Bytes,
+			UnknownBytes:  unknown.Bytes,
+			Packets:       upload.Packets + download.Packets + lan.Packets + other.Packets + unknown.Packets,
+		},
+		Rates: httpapi.LiveRates{
+			UploadBPS:   rateBytes(upload.Bytes, interval),
+			DownloadBPS: rateBytes(download.Bytes, interval),
+		},
+	}
+}
+
 func formatTopConversations(conversations []traffic.ConversationCounters) string {
 	if len(conversations) == 0 {
 		return ""
@@ -665,6 +768,7 @@ func printUsage() {
 		"trafficanalysis capture -config config.json",
 		"trafficanalysis capture -config config.json -quiet",
 		"trafficanalysis capture -config config.json -live-interval 2s",
+		"trafficanalysis capture -config config.json -web-addr :8080",
 		"trafficanalysis read-pcap -config config.json -pcap sample.pcap",
 		"trafficanalysis query -db traffic.db -last 1h",
 		"trafficanalysis query -db traffic.db -date 2026-04-17",

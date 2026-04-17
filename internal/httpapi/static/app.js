@@ -10,12 +10,17 @@ const elements = {
   lanTotal: document.querySelector("#lanTotal"),
   otherTotal: document.querySelector("#otherTotal"),
   packetTotal: document.querySelector("#packetTotal"),
+  liveUploadRate: document.querySelector("#liveUploadRate"),
+  liveDownloadRate: document.querySelector("#liveDownloadRate"),
+  liveWan: document.querySelector("#liveWan"),
+  livePackets: document.querySelector("#livePackets"),
   rangeText: document.querySelector("#rangeText"),
   chart: document.querySelector("#trafficChart"),
   breakdownBody: document.querySelector("#breakdownBody"),
 };
 
 let refreshTimer = null;
+let eventSource = null;
 let lastData = null;
 
 function formatBytes(bytes) {
@@ -78,6 +83,15 @@ function renderTraffic(data) {
 
   renderChart(data.series || []);
   renderBreakdown(data.breakdown || []);
+}
+
+function renderLive(snapshot) {
+  elements.liveUploadRate.textContent = `${formatBytes(snapshot.rates.upload_bps)}/s`;
+  elements.liveDownloadRate.textContent = `${formatBytes(snapshot.rates.download_bps)}/s`;
+  elements.liveWan.textContent = snapshot.wan_available ? snapshot.wan_ip : "不可用";
+  elements.livePackets.textContent = Number(snapshot.totals.packets || 0).toLocaleString();
+  elements.status.textContent = "实时连接";
+  elements.status.style.background = "#b9dfcc";
 }
 
 function renderBreakdown(rows) {
@@ -188,13 +202,57 @@ function syncControls() {
 }
 
 function updateAutoRefresh() {
+  stopAutoRefresh();
+  if (elements.autoRefresh.checked) {
+    startLiveStream();
+  }
+}
+
+function stopAutoRefresh() {
   if (refreshTimer) {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
-  if (elements.autoRefresh.checked) {
-    refreshTimer = setInterval(loadTraffic, 5000);
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
   }
+}
+
+function startLiveStream() {
+  if (!window.EventSource) {
+    startPolling();
+    return;
+  }
+
+  const source = new EventSource("/api/live");
+  eventSource = source;
+  source.addEventListener("snapshot", (event) => {
+    try {
+      renderLive(JSON.parse(event.data));
+    } catch (error) {
+      console.error(error);
+    }
+  });
+  source.onerror = () => {
+    if (eventSource !== source) {
+      return;
+    }
+    source.close();
+    eventSource = null;
+    elements.status.textContent = "轮询刷新";
+    elements.status.style.background = "var(--accent)";
+    startPolling();
+  };
+
+  refreshTimer = setInterval(loadTraffic, 30000);
+}
+
+function startPolling() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+  }
+  refreshTimer = setInterval(loadTraffic, 5000);
 }
 
 elements.queryButton.addEventListener("click", loadTraffic);

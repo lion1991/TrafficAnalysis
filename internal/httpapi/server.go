@@ -25,14 +25,16 @@ type BucketQueryer interface {
 }
 
 type Options struct {
-	Location *time.Location
-	Now      func() time.Time
+	Location   *time.Location
+	Now        func() time.Time
+	LiveSource LiveSource
 }
 
 type server struct {
-	queryer  BucketQueryer
-	location *time.Location
-	now      func() time.Time
+	queryer    BucketQueryer
+	location   *time.Location
+	now        func() time.Time
+	liveSource LiveSource
 }
 
 func NewHandler(queryer BucketQueryer, options Options) http.Handler {
@@ -46,13 +48,15 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	}
 
 	srv := server{
-		queryer:  queryer,
-		location: location,
-		now:      now,
+		queryer:    queryer,
+		location:   location,
+		now:        now,
+		liveSource: options.LiveSource,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/traffic", srv.handleTraffic)
+	mux.HandleFunc("/api/live", srv.handleLive)
 	mux.Handle("/", srv.staticHandler())
 	return mux
 }
@@ -80,6 +84,55 @@ func (s server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		return
+	}
+}
+
+func (s server) handleLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.liveSource == nil {
+		http.Error(w, "live stream is only available from a capture process", http.StatusServiceUnavailable)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	events, cancel := s.liveSource.Subscribe(r.Context())
+	defer cancel()
+
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case snapshot, ok := <-events:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(snapshot)
+			if err != nil {
+				return
+			}
+			if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
 	}
 }
 
