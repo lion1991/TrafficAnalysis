@@ -49,6 +49,37 @@ func TestWANIPClassifierReturnsUnknownWhenWANIPUnavailable(t *testing.T) {
 	}
 }
 
+func TestWANIPClassifierClassifiesConfiguredLocalNetworkTrafficAsLAN(t *testing.T) {
+	wan := netip.MustParseAddr("42.103.52.33")
+	local := netip.MustParsePrefix("192.168.248.0/21")
+	classifier := NewWANClassifierWithLocalNetworks(func() (netip.Addr, bool) {
+		return wan, true
+	}, []netip.Prefix{local})
+
+	direction := classifier.Classify(Packet{
+		Timestamp: time.Unix(100, 0),
+		SrcIP:     netip.MustParseAddr("192.168.252.1"),
+		DstIP:     netip.MustParseAddr("239.255.255.250"),
+		SrcPort:   1900,
+		DstPort:   1900,
+		Protocol:  "udp",
+		Bytes:     1024,
+	})
+	if direction != DirectionLAN {
+		t.Fatalf("expected lan, got %s", direction)
+	}
+
+	upload := classifier.Classify(Packet{
+		Timestamp: time.Unix(101, 0),
+		SrcIP:     wan,
+		DstIP:     netip.MustParseAddr("8.8.8.8"),
+		Bytes:     1200,
+	})
+	if upload != DirectionUpload {
+		t.Fatalf("expected WAN IP to still classify as upload, got %s", upload)
+	}
+}
+
 func TestAggregatorBucketsTrafficByTimeDirectionAndProtocol(t *testing.T) {
 	aggregator := NewAggregator(time.Minute)
 	base := time.Date(2026, 4, 17, 10, 7, 30, 0, time.UTC)

@@ -7,6 +7,10 @@
   "bucket_seconds": 60,
   "flush_seconds": 10,
   "live_seconds": 5,
+  "local_networks": [
+    "192.168.248.0/21"
+  ],
+  "ignore_lan_traffic": true,
   "wan_ip": {
     "http_url": "https://api.ipify.org",
     "static": "",

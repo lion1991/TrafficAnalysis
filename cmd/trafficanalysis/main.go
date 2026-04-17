@@ -185,7 +185,11 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	}
 	go manager.Run(ctx, cfg.WANIPRefreshInterval())
 
-	classifier := traffic.NewWANClassifier(manager.Current)
+	localNetworks, err := config.ParseLocalNetworks(cfg.LocalNetworks)
+	if err != nil {
+		return err
+	}
+	classifier := traffic.NewWANClassifierWithLocalNetworks(manager.Current, localNetworks)
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
 	meter := traffic.NewMeter()
 
@@ -193,8 +197,11 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	go func() {
 		errCh <- runner(ctx, func(packet traffic.Packet) {
 			direction := classifier.Classify(packet)
-			aggregator.Add(packet, direction)
 			meter.AddPacket(direction, packet)
+			if direction == traffic.DirectionLAN && cfg.IgnoreLAN {
+				return
+			}
+			aggregator.Add(packet, direction)
 		})
 	}()
 
@@ -327,6 +334,7 @@ func printRows(rows []store.BucketRow) {
 
 	var uploadBytes int64
 	var downloadBytes int64
+	var lanBytes int64
 	var otherBytes int64
 	for _, row := range rows {
 		fmt.Printf(
@@ -342,6 +350,8 @@ func printRows(rows []store.BucketRow) {
 			uploadBytes += row.Value.Bytes
 		case traffic.DirectionDownload:
 			downloadBytes += row.Value.Bytes
+		case traffic.DirectionLAN:
+			lanBytes += row.Value.Bytes
 		default:
 			otherBytes += row.Value.Bytes
 		}
@@ -350,6 +360,9 @@ func printRows(rows []store.BucketRow) {
 	fmt.Println()
 	fmt.Printf("upload:   %s\n", formatBytes(uploadBytes))
 	fmt.Printf("download: %s\n", formatBytes(downloadBytes))
+	if lanBytes > 0 {
+		fmt.Printf("lan:      %s\n", formatBytes(lanBytes))
+	}
 	if otherBytes > 0 {
 		fmt.Printf("other:    %s\n", formatBytes(otherBytes))
 	}
@@ -382,7 +395,8 @@ func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval ti
 	download := stats[traffic.DirectionDownload]
 	other := stats[traffic.DirectionOther]
 	unknown := stats[traffic.DirectionUnknown]
-	totalPackets := upload.Packets + download.Packets + other.Packets + unknown.Packets
+	lan := stats[traffic.DirectionLAN]
+	totalPackets := upload.Packets + download.Packets + lan.Packets + other.Packets + unknown.Packets
 
 	wanText := "unavailable"
 	if wanOK {
@@ -390,11 +404,12 @@ func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval ti
 	}
 
 	line := fmt.Sprintf(
-		"%s wan=%s upload=%s download=%s other=%s unknown=%s up_rate=%s/s down_rate=%s/s packets=%d",
+		"%s wan=%s upload=%s download=%s lan=%s other=%s unknown=%s up_rate=%s/s down_rate=%s/s packets=%d",
 		now.Format(time.RFC3339),
 		wanText,
 		formatBytes(upload.Bytes),
 		formatBytes(download.Bytes),
+		formatBytes(lan.Bytes),
 		formatBytes(other.Bytes),
 		formatBytes(unknown.Bytes),
 		formatBytes(rateBytes(upload.Bytes, interval)),
@@ -403,6 +418,9 @@ func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval ti
 	)
 	if top := formatTopConversations(snapshot.Conversations[traffic.DirectionOther]); top != "" {
 		line += " other_top=" + top
+	}
+	if top := formatTopConversations(snapshot.Conversations[traffic.DirectionLAN]); top != "" {
+		line += " lan_top=" + top
 	}
 	if top := formatTopConversations(snapshot.Conversations[traffic.DirectionUnknown]); top != "" {
 		line += " unknown_top=" + top

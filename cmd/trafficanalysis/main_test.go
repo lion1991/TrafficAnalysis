@@ -76,6 +76,44 @@ func TestFormatLiveSnapshotIncludesOtherTopConversations(t *testing.T) {
 	}
 }
 
+func TestFormatLiveSnapshotIncludesLANTraffic(t *testing.T) {
+	line := formatLiveSnapshot(
+		time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC),
+		netip.MustParseAddr("42.103.52.33"),
+		true,
+		time.Second,
+		traffic.MeterSnapshot{
+			Directions: map[traffic.Direction]traffic.DirectionCounters{
+				traffic.DirectionLAN: {Bytes: 1024, Packets: 2},
+			},
+			Conversations: map[traffic.Direction][]traffic.ConversationCounters{
+				traffic.DirectionLAN: {
+					{
+						Key: traffic.ConversationKey{
+							SrcIP:    netip.MustParseAddr("192.168.252.1"),
+							DstIP:    netip.MustParseAddr("239.255.255.250"),
+							SrcPort:  1900,
+							DstPort:  1900,
+							Protocol: "udp",
+						},
+						Bytes:   1024,
+						Packets: 2,
+					},
+				},
+			},
+		},
+	)
+
+	for _, want := range []string{
+		"lan=1.00 KiB",
+		"lan_top=192.168.252.1:1900->239.255.255.250:1900/udp:1.00 KiB",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected line to contain %q, got %q", want, line)
+		}
+	}
+}
+
 func TestResolveLiveOutputOptionsHonorsQuietAndIntervalOverride(t *testing.T) {
 	cfg := captureOutputConfig{
 		live:         true,

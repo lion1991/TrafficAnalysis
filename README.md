@@ -55,6 +55,10 @@ Example:
   "bucket_seconds": 60,
   "flush_seconds": 10,
   "live_seconds": 5,
+  "local_networks": [
+    "192.168.248.0/21"
+  ],
+  "ignore_lan_traffic": true,
   "wan_ip": {
     "http_url": "https://api.ipify.org",
     "static": "",
@@ -90,6 +94,8 @@ sudo ./trafficanalysis capture -config config.json -live-interval 2s
 Set `"live_seconds": 0` to make config-based live output silent by default.
 
 The default `bpf` is empty so PPPoE or VLAN-encapsulated WAN traffic is not filtered out before decoding. If you need a filter, set it explicitly after confirming the capture format with tcpdump.
+
+Set `local_networks` to your LAN CIDRs. Packets matching those CIDRs are shown as `lan` in live output. With `ignore_lan_traffic: true`, they are not written into the WAN traffic database.
 
 Import a pcap file for offline testing:
 

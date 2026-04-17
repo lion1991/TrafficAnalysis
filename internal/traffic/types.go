@@ -10,6 +10,7 @@ type Direction string
 const (
 	DirectionUpload   Direction = "upload"
 	DirectionDownload Direction = "download"
+	DirectionLAN      Direction = "lan"
 	DirectionOther    Direction = "other"
 	DirectionUnknown  Direction = "unknown"
 )

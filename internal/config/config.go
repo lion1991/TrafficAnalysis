@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/netip"
 	"os"
 	"time"
 )
@@ -16,6 +18,8 @@ type Config struct {
 	BucketSeconds int         `json:"bucket_seconds"`
 	FlushSeconds  int         `json:"flush_seconds"`
 	LiveSeconds   int         `json:"live_seconds"`
+	LocalNetworks []string    `json:"local_networks"`
+	IgnoreLAN     bool        `json:"ignore_lan_traffic"`
 	WANIP         WANIPConfig `json:"wan_ip"`
 }
 
@@ -34,6 +38,7 @@ func Default() Config {
 		BucketSeconds: 60,
 		FlushSeconds:  10,
 		LiveSeconds:   5,
+		IgnoreLAN:     true,
 		WANIP: WANIPConfig{
 			HTTPURL:        "https://api.ipify.org",
 			RefreshSeconds: 300,
@@ -101,4 +106,16 @@ func (c Config) LiveInterval() time.Duration {
 
 func (c Config) WANIPRefreshInterval() time.Duration {
 	return time.Duration(c.WANIP.RefreshSeconds) * time.Second
+}
+
+func ParseLocalNetworks(networks []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(networks))
+	for _, network := range networks {
+		prefix, err := netip.ParsePrefix(network)
+		if err != nil {
+			return nil, fmt.Errorf("parse local_networks entry %q: %w", network, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
