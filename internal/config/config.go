@@ -15,6 +15,7 @@ type Config struct {
 	Promiscuous   bool        `json:"promiscuous"`
 	BucketSeconds int         `json:"bucket_seconds"`
 	FlushSeconds  int         `json:"flush_seconds"`
+	LiveSeconds   int         `json:"live_seconds"`
 	WANIP         WANIPConfig `json:"wan_ip"`
 }
 
@@ -32,6 +33,7 @@ func Default() Config {
 		Promiscuous:   true,
 		BucketSeconds: 60,
 		FlushSeconds:  10,
+		LiveSeconds:   5,
 		WANIP: WANIPConfig{
 			HTTPURL:        "https://api.ipify.org",
 			RefreshSeconds: 300,
@@ -73,6 +75,9 @@ func (c *Config) applyDefaults() {
 	if c.FlushSeconds <= 0 {
 		c.FlushSeconds = defaults.FlushSeconds
 	}
+	if c.LiveSeconds < 0 {
+		c.LiveSeconds = defaults.LiveSeconds
+	}
 	if c.WANIP.RefreshSeconds <= 0 {
 		c.WANIP.RefreshSeconds = defaults.WANIP.RefreshSeconds
 	}
@@ -91,6 +96,10 @@ func (c Config) BucketDuration() time.Duration {
 
 func (c Config) FlushInterval() time.Duration {
 	return time.Duration(c.FlushSeconds) * time.Second
+}
+
+func (c Config) LiveInterval() time.Duration {
+	return time.Duration(c.LiveSeconds) * time.Second
 }
 
 func (c Config) WANIPRefreshInterval() time.Duration {

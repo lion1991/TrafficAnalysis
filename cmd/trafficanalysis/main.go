@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -68,6 +69,9 @@ func runInitConfig(args []string) error {
 func runCapture(args []string) error {
 	fs := flag.NewFlagSet("capture", flag.ExitOnError)
 	configPath := fs.String("config", "config.json", "config file path")
+	live := fs.Bool("live", true, "print live traffic stats while capturing")
+	quiet := fs.Bool("quiet", false, "disable live traffic stats")
+	liveInterval := fs.String("live-interval", "", "live stats interval, such as 2s or 10s")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -83,7 +87,17 @@ func runCapture(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return runCaptureToStore(ctx, cfg, func(ctx context.Context, handler capture.PacketHandler) error {
+	output, err := resolveCaptureOutputConfig(captureOutputConfig{
+		live:         *live,
+		quiet:        *quiet,
+		liveInterval: *liveInterval,
+		configPeriod: cfg.LiveInterval(),
+	})
+	if err != nil {
+		return err
+	}
+
+	return runCaptureToStore(ctx, cfg, output, func(ctx context.Context, handler capture.PacketHandler) error {
 		return capture.RunLive(ctx, capture.Options{
 			Interface:   cfg.Interface,
 			BPF:         cfg.BPF,
@@ -109,14 +123,53 @@ func runReadPCAP(args []string) error {
 		return err
 	}
 
-	return runCaptureToStore(context.Background(), cfg, func(ctx context.Context, handler capture.PacketHandler) error {
+	output, err := resolveCaptureOutputConfig(captureOutputConfig{
+		live:         false,
+		configPeriod: cfg.LiveInterval(),
+	})
+	if err != nil {
+		return err
+	}
+
+	return runCaptureToStore(context.Background(), cfg, output, func(ctx context.Context, handler capture.PacketHandler) error {
 		return capture.RunFile(ctx, *pcapPath, cfg.BPF, handler)
 	})
 }
 
 type captureRunner func(context.Context, capture.PacketHandler) error
 
-func runCaptureToStore(ctx context.Context, cfg config.Config, runner captureRunner) error {
+type captureOutputConfig struct {
+	live         bool
+	quiet        bool
+	liveInterval string
+	configPeriod time.Duration
+}
+
+type resolvedCaptureOutputConfig struct {
+	enabled  bool
+	interval time.Duration
+}
+
+func resolveCaptureOutputConfig(cfg captureOutputConfig) (resolvedCaptureOutputConfig, error) {
+	if cfg.quiet || !cfg.live {
+		return resolvedCaptureOutputConfig{enabled: false}, nil
+	}
+
+	interval := cfg.configPeriod
+	if cfg.liveInterval != "" {
+		parsed, err := time.ParseDuration(cfg.liveInterval)
+		if err != nil {
+			return resolvedCaptureOutputConfig{}, err
+		}
+		interval = parsed
+	}
+	if interval <= 0 {
+		return resolvedCaptureOutputConfig{enabled: false}, nil
+	}
+	return resolvedCaptureOutputConfig{enabled: true, interval: interval}, nil
+}
+
+func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCaptureOutputConfig, runner captureRunner) error {
 	st, err := store.OpenSQLite(ctx, cfg.Database)
 	if err != nil {
 		return err
@@ -134,16 +187,28 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, runner captureRun
 
 	classifier := traffic.NewWANClassifier(manager.Current)
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
+	meter := traffic.NewMeter()
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- runner(ctx, func(packet traffic.Packet) {
-			aggregator.Add(packet, classifier.Classify(packet))
+			direction := classifier.Classify(packet)
+			aggregator.Add(packet, direction)
+			meter.Add(direction, packet.Bytes)
 		})
 	}()
 
-	ticker := time.NewTicker(cfg.FlushInterval())
-	defer ticker.Stop()
+	flushTicker := time.NewTicker(cfg.FlushInterval())
+	defer flushTicker.Stop()
+
+	var liveTicker *time.Ticker
+	var liveC <-chan time.Time
+	if output.enabled {
+		liveTicker = time.NewTicker(output.interval)
+		defer liveTicker.Stop()
+		liveC = liveTicker.C
+		fmt.Printf("capture started: interface=%s database=%s live_interval=%s\n", cfg.Interface, cfg.Database, output.interval)
+	}
 
 	for {
 		select {
@@ -154,10 +219,13 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, runner captureRun
 				return flushErr
 			}
 			return err
-		case <-ticker.C:
+		case <-flushTicker.C:
 			if err := flushCompleteBuckets(ctx, st, aggregator, cfg.BucketDuration()); err != nil {
 				return err
 			}
+		case now := <-liveC:
+			wanIP, ok := manager.Current()
+			fmt.Println(formatLiveStats(now.UTC(), wanIP, ok, output.interval, meter.SnapshotAndReset()))
 		}
 	}
 }
@@ -304,10 +372,45 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f %s", value, unit)
 }
 
+func formatLiveStats(now time.Time, wanIP netip.Addr, wanOK bool, interval time.Duration, stats map[traffic.Direction]traffic.DirectionCounters) string {
+	upload := stats[traffic.DirectionUpload]
+	download := stats[traffic.DirectionDownload]
+	other := stats[traffic.DirectionOther]
+	unknown := stats[traffic.DirectionUnknown]
+	totalPackets := upload.Packets + download.Packets + other.Packets + unknown.Packets
+
+	wanText := "unavailable"
+	if wanOK {
+		wanText = wanIP.String()
+	}
+
+	return fmt.Sprintf(
+		"%s wan=%s upload=%s download=%s other=%s unknown=%s up_rate=%s/s down_rate=%s/s packets=%d",
+		now.Format(time.RFC3339),
+		wanText,
+		formatBytes(upload.Bytes),
+		formatBytes(download.Bytes),
+		formatBytes(other.Bytes),
+		formatBytes(unknown.Bytes),
+		formatBytes(rateBytes(upload.Bytes, interval)),
+		formatBytes(rateBytes(download.Bytes, interval)),
+		totalPackets,
+	)
+}
+
+func rateBytes(bytes int64, interval time.Duration) int64 {
+	if interval <= 0 {
+		return 0
+	}
+	return int64(float64(bytes) / interval.Seconds())
+}
+
 func printUsage() {
 	commands := []string{
 		"trafficanalysis init-config -out config.json",
 		"trafficanalysis capture -config config.json",
+		"trafficanalysis capture -config config.json -quiet",
+		"trafficanalysis capture -config config.json -live-interval 2s",
 		"trafficanalysis read-pcap -config config.json -pcap sample.pcap",
 		"trafficanalysis query -db traffic.db -last 1h",
 		"trafficanalysis query -db traffic.db -from 2026-04-17T00:00:00Z -to 2026-04-17T01:00:00Z",

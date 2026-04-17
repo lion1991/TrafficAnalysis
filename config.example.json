@@ -6,10 +6,10 @@
   "promiscuous": true,
   "bucket_seconds": 60,
   "flush_seconds": 10,
+  "live_seconds": 5,
   "wan_ip": {
     "http_url": "https://api.ipify.org",
     "static": "",
     "refresh_seconds": 300
   }
 }
-

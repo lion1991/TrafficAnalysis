@@ -54,6 +54,7 @@ Example:
   "promiscuous": true,
   "bucket_seconds": 60,
   "flush_seconds": 10,
+  "live_seconds": 5,
   "wan_ip": {
     "http_url": "https://api.ipify.org",
     "static": "",
@@ -71,6 +72,22 @@ Start live capture:
 ```bash
 sudo ./trafficanalysis capture -config config.json
 ```
+
+During capture, the process prints a live line every `live_seconds` by default:
+
+```text
+2026-04-17T12:00:00Z wan=203.0.113.10 upload=10.00 KiB download=20.00 KiB other=0 B unknown=0 B up_rate=2.00 KiB/s down_rate=4.00 KiB/s packets=7
+```
+
+Use command flags to control display mode:
+
+```bash
+sudo ./trafficanalysis capture -config config.json -quiet
+sudo ./trafficanalysis capture -config config.json -live=false
+sudo ./trafficanalysis capture -config config.json -live-interval 2s
+```
+
+Set `"live_seconds": 0` to make config-based live output silent by default.
 
 Import a pcap file for offline testing:
 
@@ -95,4 +112,3 @@ Explicit range:
 ```
 
 Data is stored as time buckets in SQLite. The first version stores totals by bucket, direction, and protocol.
-
