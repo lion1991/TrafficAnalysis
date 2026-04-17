@@ -221,3 +221,80 @@ data: {"timestamp":"2026-04-17T12:00:00Z","wan_ip":"203.0.113.10","wan_available
 
 The Web UI connects to `/api/live` as soon as the page loads. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.
 The live upload/download row is backed by `/api/live` and updates once per second from capture memory when the page is served by `capture -web-addr`.
+
+## systemd Service
+
+The repository includes a systemd unit for continuous capture with the Web UI and `/api/live` enabled:
+
+```text
+deploy/systemd/trafficanalysis.service
+```
+
+Recommended layout on the Linux capture host:
+
+```text
+/usr/local/bin/trafficanalysis
+/etc/trafficanalysis/config.json
+/var/lib/trafficanalysis/traffic.db
+```
+
+Install:
+
+```bash
+sudo useradd --system --home /var/lib/trafficanalysis --shell /usr/sbin/nologin trafficanalysis
+sudo install -m 0755 trafficanalysis /usr/local/bin/trafficanalysis
+sudo install -d -m 0750 -o root -g trafficanalysis /etc/trafficanalysis
+sudo install -m 0640 -o root -g trafficanalysis deploy/systemd/config.example.json /etc/trafficanalysis/config.json
+sudo install -m 0644 deploy/systemd/trafficanalysis.service /etc/systemd/system/trafficanalysis.service
+```
+
+Edit `/etc/trafficanalysis/config.json` before starting. At minimum, set:
+
+- `interface`: the Linux interface receiving mirrored WAN traffic
+- `database`: keep `/var/lib/trafficanalysis/traffic.db` for the provided service
+- `local_networks`: your LAN CIDRs, such as `192.168.248.0/21`
+- `wan_ip`: use an HTTP endpoint or static fallback that returns the router WAN IP
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now trafficanalysis
+```
+
+Check status and logs:
+
+```bash
+systemctl status trafficanalysis
+journalctl -u trafficanalysis -f
+```
+
+Open the Web UI:
+
+```text
+http://<linux-server-ip>:8080
+```
+
+The unit runs:
+
+```bash
+/usr/local/bin/trafficanalysis capture -config /etc/trafficanalysis/config.json -web-addr :8080 -quiet
+```
+
+It uses `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN`, so the process can capture packets without running as root. `StateDirectory=trafficanalysis` lets systemd create and own `/var/lib/trafficanalysis` for the service user.
+
+Stop or restart:
+
+```bash
+sudo systemctl stop trafficanalysis
+sudo systemctl restart trafficanalysis
+```
+
+After replacing the binary:
+
+```bash
+sudo install -m 0755 trafficanalysis /usr/local/bin/trafficanalysis
+sudo systemctl restart trafficanalysis
+```
+
+If the service starts but the Web UI is unreachable, check host firewall rules for TCP `8080`.

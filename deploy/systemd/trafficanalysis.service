@@ -1,0 +1,38 @@
+[Unit]
+Description=TrafficAnalysis WAN mirror traffic monitor
+Documentation=https://github.com/lion1991/TrafficAnalysis
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=trafficanalysis
+Group=trafficanalysis
+WorkingDirectory=/var/lib/trafficanalysis
+ExecStart=/usr/local/bin/trafficanalysis capture -config /etc/trafficanalysis/config.json -web-addr :8080 -quiet
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+
+StateDirectory=trafficanalysis
+StateDirectoryMode=0750
+ConfigurationDirectory=trafficanalysis
+ConfigurationDirectoryMode=0750
+UMask=0027
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
