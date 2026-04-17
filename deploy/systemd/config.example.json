@@ -1,5 +1,6 @@
 {
   "interface": "eth1",
+  "lan_interface": "enp2s0",
   "database": "/var/lib/trafficanalysis/traffic.db",
   "bpf": "",
   "snapshot_len": 262144,

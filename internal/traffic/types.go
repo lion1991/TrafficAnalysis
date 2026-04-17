@@ -19,6 +19,8 @@ type Packet struct {
 	Timestamp time.Time
 	SrcIP     netip.Addr
 	DstIP     netip.Addr
+	SrcMAC    string
+	DstMAC    string
 	SrcPort   uint16
 	DstPort   uint16
 	Protocol  string

@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	Interface     string      `json:"interface"`
+	LANInterface  string      `json:"lan_interface"`
 	Database      string      `json:"database"`
 	BPF           string      `json:"bpf"`
 	SnapshotLen   int         `json:"snapshot_len"`

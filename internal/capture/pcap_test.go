@@ -57,6 +57,12 @@ func TestExtractPacketParsesIPv4TCPPacket(t *testing.T) {
 	if parsed.DstIP != netip.MustParseAddr("198.51.100.8") {
 		t.Fatalf("unexpected dst IP: %s", parsed.DstIP)
 	}
+	if parsed.SrcMAC != "00:01:02:03:04:05" {
+		t.Fatalf("unexpected src MAC: %s", parsed.SrcMAC)
+	}
+	if parsed.DstMAC != "06:07:08:09:0a:0b" {
+		t.Fatalf("unexpected dst MAC: %s", parsed.DstMAC)
+	}
 	if parsed.SrcPort != 443 || parsed.DstPort != 53000 {
 		t.Fatalf("unexpected ports: %d -> %d", parsed.SrcPort, parsed.DstPort)
 	}

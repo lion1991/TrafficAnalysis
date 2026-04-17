@@ -6,14 +6,21 @@ It is designed for this topology:
 
 ```text
 router WAN port -- mirrored traffic --> Linux capture interface
+switch router-uplink port -- mirrored traffic --> optional Linux LAN capture interface
 ```
 
-Because packets are mirrored from the router WAN side, NAT has already happened. The analyzer cannot see LAN client IPs in this mode. Upload and download are classified using the router's current WAN IP:
+With only the WAN mirror, NAT has already happened. The analyzer cannot see LAN client IPs in that mode. WAN upload and download are classified using the router's current WAN IP:
 
 - `src == current WAN IP`: upload
 - `dst == current WAN IP`: download
 - no current WAN IP: unknown
 - neither side is current WAN IP: other
+
+When `lan_interface` is configured, the analyzer also captures the switch mirror before NAT. That stream is used for per-client public traffic accounting:
+
+- `src` is in `local_networks` and `dst` is public: upload for `src`
+- `dst` is in `local_networks` and `src` is public: download for `dst`
+- private, broadcast, multicast, and LAN-to-LAN traffic are ignored for client public totals
 
 The WAN IP can be refreshed automatically from an HTTP endpoint, with an optional static fallback.
 
@@ -48,6 +55,7 @@ Example:
 ```json
 {
   "interface": "eth1",
+  "lan_interface": "enp2s0",
   "database": "traffic.db",
   "bpf": "",
   "snapshot_len": 262144,
@@ -79,6 +87,8 @@ Start live capture:
 sudo ./trafficanalysis capture -config config.json
 ```
 
+Set `interface` to the WAN mirror interface. Set `lan_interface` to the switch/router-uplink mirror interface when you want per-client traffic. Leave `lan_interface` empty to keep WAN-only behavior.
+
 Start live capture with the built-in Web UI and live SSE stream:
 
 ```bash
@@ -96,7 +106,7 @@ http://<linux-server-ip>:8080
 During capture, the process prints a live line every `live_seconds` by default:
 
 ```text
-2026-04-17T12:00:00Z wan=203.0.113.10 upload=10.00 KiB download=20.00 KiB other=0 B unknown=0 B up_rate=2.00 KiB/s down_rate=4.00 KiB/s packets=7
+2026-04-17T12:00:00Z wan=203.0.113.10 upload=10.00 KiB download=20.00 KiB lan=0 B other=0 B unknown=0 B up_rate=2.00 KiB/s down_rate=4.00 KiB/s packets=7
 ```
 
 Use command flags to control display mode:
@@ -112,6 +122,8 @@ Set `"live_seconds": 0` to make config-based live output silent by default.
 The default `bpf` is empty so PPPoE or VLAN-encapsulated WAN traffic is not filtered out before decoding. If you need a filter, set it explicitly after confirming the capture format with tcpdump.
 
 Set `local_networks` to your LAN CIDRs. Packets matching those CIDRs are shown as `lan` in live output. With `ignore_lan_traffic: true`, they are not written into the WAN traffic database.
+
+Client traffic is written from `lan_interface` into `client_buckets`. It uses the LAN-side IP and the Ethernet MAC from the local side of the packet, so DHCP address changes can still be correlated by MAC in the Web UI/API.
 
 Import a pcap file for offline testing:
 
@@ -161,7 +173,10 @@ Explicit RFC3339 range also works:
   -to 2026-04-17T01:00:00Z
 ```
 
-Data is stored as time buckets in SQLite. The first version stores totals by bucket, direction, and protocol.
+Data is stored as time buckets in SQLite:
+
+- `traffic_buckets`: WAN totals by bucket, direction, and protocol
+- `client_buckets`: LAN-client public traffic by bucket, client IP, client MAC, direction, and protocol
 
 ## Web UI and HTTP API
 
@@ -193,6 +208,8 @@ GET /api/traffic?last=7d
 GET /api/traffic?date=2026-04-17
 GET /api/traffic?month=2026-04
 GET /api/traffic?from=2026-04-17%2000:00&to=2026-04-18%2000:00
+GET /api/clients?last=24h
+GET /api/clients?date=2026-04-17&client_ip=192.168.248.22
 ```
 
 Response contains:
@@ -201,6 +218,12 @@ Response contains:
 - `totals`: upload/download/lan/other/unknown bytes and packet total
 - `series`: bucketed upload/download/lan/other/unknown values for charting
 - `breakdown`: totals by direction and protocol
+
+`/api/clients` returns:
+
+- `range`: UTC query range
+- `clients`: per-client upload/download totals sorted by total traffic
+- `breakdown`: per-client totals by direction and protocol
 
 The standalone `serve` command is suitable for historical queries against recently flushed SQLite bucket data.
 The upload/download summary cards are backed by `/api/traffic`, so they reflect data already flushed into SQLite. With the default `bucket_seconds: 60` and `flush_seconds: 10`, the current in-progress minute is not included until the bucket completes and the next flush runs.
@@ -251,6 +274,7 @@ sudo install -m 0644 deploy/systemd/trafficanalysis.service /etc/systemd/system/
 Edit `/etc/trafficanalysis/config.json` before starting. At minimum, set:
 
 - `interface`: the Linux interface receiving mirrored WAN traffic
+- `lan_interface`: the Linux interface receiving mirrored LAN pre-NAT traffic, such as `enp2s0`; leave empty for WAN-only capture
 - `database`: keep `/var/lib/trafficanalysis/traffic.db` for the provided service
 - `local_networks`: your LAN CIDRs, such as `192.168.248.0/21`
 - `wan_ip`: use an HTTP endpoint or static fallback that returns the router WAN IP

@@ -35,6 +35,10 @@
           结束
           <input id="to" type="text" placeholder="2026-04-18 00:00" />
         </label>
+        <label>
+          客户端 IP
+          <input id="clientIP" type="text" placeholder="192.168.248.22" />
+        </label>
         <label class="checkbox">
           <input id="autoRefresh" type="checkbox" />
           自动刷新
@@ -94,6 +98,25 @@
 
       <section class="grid">
         <article>
+          <h2>客户端排行</h2>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>客户端 IP</th>
+                  <th>MAC</th>
+                  <th>上传</th>
+                  <th>下载</th>
+                  <th>包</th>
+                </tr>
+              </thead>
+              <tbody id="clientsBody">
+                <tr><td colspan="5">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article>
           <h2>协议分布</h2>
           <div class="tableWrap">
             <table>
@@ -114,6 +137,7 @@
         <article class="notes">
           <h2>查询说明</h2>
           <p>自定义时间支持 <code>2026-04-17 00:00</code>、<code>2026-04-17</code> 和 RFC3339。</p>
+          <p>客户端排行来自 <code>lan_interface</code> 的 NAT 前镜像流量，只统计内网地址和公网地址之间的上传、下载。</p>
           <p>当前页面读取 SQLite 中已经落库的 bucket 数据。自动刷新适合查看最近范围的变化。</p>
         </article>
       </section>

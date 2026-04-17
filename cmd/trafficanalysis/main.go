@@ -103,6 +103,18 @@ func runCapture(args []string) error {
 		return err
 	}
 
+	var lanRunner captureRunner
+	if cfg.LANInterface != "" {
+		lanRunner = func(ctx context.Context, handler capture.PacketHandler) error {
+			return capture.RunLive(ctx, capture.Options{
+				Interface:   cfg.LANInterface,
+				BPF:         cfg.BPF,
+				SnapshotLen: cfg.SnapshotLen,
+				Promiscuous: cfg.Promiscuous,
+			}, handler)
+		}
+	}
+
 	return runCaptureToStore(ctx, cfg, output, func(ctx context.Context, handler capture.PacketHandler) error {
 		return capture.RunLive(ctx, capture.Options{
 			Interface:   cfg.Interface,
@@ -110,7 +122,7 @@ func runCapture(args []string) error {
 			SnapshotLen: cfg.SnapshotLen,
 			Promiscuous: cfg.Promiscuous,
 		}, handler)
-	}, resolveCaptureWebConfig(*webAddr))
+	}, lanRunner, resolveCaptureWebConfig(*webAddr))
 }
 
 func runReadPCAP(args []string) error {
@@ -139,7 +151,7 @@ func runReadPCAP(args []string) error {
 
 	return runCaptureToStore(context.Background(), cfg, output, func(ctx context.Context, handler capture.PacketHandler) error {
 		return capture.RunFile(ctx, *pcapPath, cfg.BPF, handler)
-	}, resolvedCaptureWebConfig{})
+	}, nil, resolvedCaptureWebConfig{})
 }
 
 type captureRunner func(context.Context, capture.PacketHandler) error
@@ -192,7 +204,7 @@ func resolveCaptureWebConfig(addr string) resolvedCaptureWebConfig {
 	}
 }
 
-func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCaptureOutputConfig, runner captureRunner, web resolvedCaptureWebConfig) error {
+func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCaptureOutputConfig, wanRunner captureRunner, lanRunner captureRunner, web resolvedCaptureWebConfig) error {
 	st, err := store.OpenSQLite(ctx, cfg.Database)
 	if err != nil {
 		return err
@@ -214,6 +226,8 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	}
 	classifier := traffic.NewWANClassifierWithLocalNetworks(manager.Current, localNetworks)
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
+	clientClassifier := traffic.NewLANClientClassifier(localNetworks)
+	clientAggregator := traffic.NewClientAggregator(cfg.BucketDuration())
 
 	var consoleMeter *traffic.Meter
 	if output.enabled {
@@ -244,9 +258,12 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		fmt.Printf("web UI listening on http://%s live_sse=/api/live\n", displayListenAddr(web.addr))
 	}
 
+	runCtx, cancelRunners := context.WithCancel(ctx)
+	defer cancelRunners()
+
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runner(ctx, func(packet traffic.Packet) {
+		errCh <- wanRunner(runCtx, func(packet traffic.Packet) {
 			manager.ObservePacket(packet.SrcIP, packet.DstIP)
 			direction := classifier.Classify(packet)
 			if shouldTriggerWANRefresh(packet, direction) {
@@ -264,6 +281,15 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			aggregator.Add(packet, direction)
 		})
 	}()
+	if lanRunner != nil {
+		go func() {
+			errCh <- lanRunner(runCtx, func(packet traffic.Packet) {
+				if client, ok := clientClassifier.Classify(packet); ok {
+					clientAggregator.Add(packet, client)
+				}
+			})
+		}()
+	}
 
 	flushTicker := time.NewTicker(cfg.FlushInterval())
 	defer flushTicker.Stop()
@@ -274,7 +300,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		liveTicker = time.NewTicker(output.interval)
 		defer liveTicker.Stop()
 		liveC = liveTicker.C
-		fmt.Printf("capture started: interface=%s database=%s live_interval=%s\n", cfg.Interface, cfg.Database, output.interval)
+		fmt.Printf("capture started: interface=%s lan_interface=%s database=%s live_interval=%s\n", cfg.Interface, cfg.LANInterface, cfg.Database, output.interval)
 	}
 
 	var webLiveTicker *time.Ticker
@@ -288,9 +314,11 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	for {
 		select {
 		case <-ctx.Done():
-			return flushAll(context.Background(), st, aggregator)
+			cancelRunners()
+			return flushAll(context.Background(), st, aggregator, clientAggregator)
 		case err := <-errCh:
-			if flushErr := flushAll(context.Background(), st, aggregator); flushErr != nil {
+			cancelRunners()
+			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
@@ -298,12 +326,13 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			if errors.Is(err, http.ErrServerClosed) {
 				continue
 			}
-			if flushErr := flushAll(context.Background(), st, aggregator); flushErr != nil {
+			cancelRunners()
+			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
 		case <-flushTicker.C:
-			if err := flushCompleteBuckets(ctx, st, aggregator, cfg.BucketDuration()); err != nil {
+			if err := flushCompleteBuckets(ctx, st, aggregator, clientAggregator, cfg.BucketDuration()); err != nil {
 				return err
 			}
 		case now := <-liveC:
@@ -335,13 +364,19 @@ func buildWANIPManager(cfg config.Config) (*wanip.Manager, error) {
 	return wanip.NewManager(wanip.NewChainProvider(providers...), cfg.WANIPRefreshInterval()), nil
 }
 
-func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, bucketDuration time.Duration) error {
+func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, bucketDuration time.Duration) error {
 	cutoff := time.Now().UTC().Truncate(bucketDuration)
-	return st.UpsertBuckets(ctx, aggregator.DrainBefore(cutoff))
+	if err := st.UpsertBuckets(ctx, aggregator.DrainBefore(cutoff)); err != nil {
+		return err
+	}
+	return st.UpsertClientBuckets(ctx, clientAggregator.DrainBefore(cutoff))
 }
 
-func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator) error {
-	return st.UpsertBuckets(ctx, aggregator.DrainAll())
+func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator) error {
+	if err := st.UpsertBuckets(ctx, aggregator.DrainAll()); err != nil {
+		return err
+	}
+	return st.UpsertClientBuckets(ctx, clientAggregator.DrainAll())
 }
 
 func runQuery(args []string) error {

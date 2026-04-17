@@ -59,3 +59,56 @@ func (c WANClassifier) isLocal(addr netip.Addr) bool {
 	}
 	return false
 }
+
+type ClientTraffic struct {
+	ClientIP  netip.Addr
+	ClientMAC string
+	Direction Direction
+}
+
+type LANClientClassifier struct {
+	localNets []netip.Prefix
+}
+
+func NewLANClientClassifier(localNets []netip.Prefix) LANClientClassifier {
+	return LANClientClassifier{localNets: localNets}
+}
+
+func (c LANClientClassifier) Classify(packet Packet) (ClientTraffic, bool) {
+	srcLocal := c.isLocal(packet.SrcIP)
+	dstLocal := c.isLocal(packet.DstIP)
+
+	switch {
+	case srcLocal && !dstLocal && isPublicAddress(packet.DstIP):
+		return ClientTraffic{
+			ClientIP:  packet.SrcIP,
+			ClientMAC: packet.SrcMAC,
+			Direction: DirectionUpload,
+		}, true
+	case dstLocal && !srcLocal && isPublicAddress(packet.SrcIP):
+		return ClientTraffic{
+			ClientIP:  packet.DstIP,
+			ClientMAC: packet.DstMAC,
+			Direction: DirectionDownload,
+		}, true
+	default:
+		return ClientTraffic{}, false
+	}
+}
+
+func (c LANClientClassifier) isLocal(addr netip.Addr) bool {
+	for _, prefix := range c.localNets {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPublicAddress(addr netip.Addr) bool {
+	return addr.IsValid() &&
+		addr.IsGlobalUnicast() &&
+		!addr.IsPrivate() &&
+		!addr.IsLoopback() &&
+		!addr.IsLinkLocalUnicast()
+}

@@ -106,6 +106,11 @@ func ExtractPacket(packet gopacket.Packet) (traffic.Packet, bool) {
 		Bytes:     packetLen,
 	}
 
+	if ethernetLayer := packet.Layer(layers.LayerTypeEthernet); ethernetLayer != nil {
+		ethernet := ethernetLayer.(*layers.Ethernet)
+		result.SrcMAC = ethernet.SrcMAC.String()
+		result.DstMAC = ethernet.DstMAC.String()
+	}
 	if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 		tcp := tcpLayer.(*layers.TCP)
 		result.SrcPort = uint16(tcp.SrcPort)

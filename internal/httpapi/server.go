@@ -24,6 +24,10 @@ type BucketQueryer interface {
 	QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error)
 }
 
+type ClientBucketQueryer interface {
+	QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]store.ClientBucketRow, error)
+}
+
 type Options struct {
 	Location   *time.Location
 	Now        func() time.Time
@@ -31,10 +35,11 @@ type Options struct {
 }
 
 type server struct {
-	queryer    BucketQueryer
-	location   *time.Location
-	now        func() time.Time
-	liveSource LiveSource
+	queryer       BucketQueryer
+	clientQueryer ClientBucketQueryer
+	location      *time.Location
+	now           func() time.Time
+	liveSource    LiveSource
 }
 
 func NewHandler(queryer BucketQueryer, options Options) http.Handler {
@@ -48,17 +53,27 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	}
 
 	srv := server{
-		queryer:    queryer,
-		location:   location,
-		now:        now,
-		liveSource: options.LiveSource,
+		queryer:       queryer,
+		clientQueryer: clientBucketQueryer(queryer),
+		location:      location,
+		now:           now,
+		liveSource:    options.LiveSource,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/traffic", srv.handleTraffic)
+	mux.HandleFunc("/api/clients", srv.handleClients)
 	mux.HandleFunc("/api/live", srv.handleLive)
 	mux.Handle("/", srv.staticHandler())
 	return mux
+}
+
+func clientBucketQueryer(queryer BucketQueryer) ClientBucketQueryer {
+	clientQueryer, ok := queryer.(ClientBucketQueryer)
+	if !ok {
+		return nil
+	}
+	return clientQueryer
 }
 
 func (s server) handleTraffic(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +151,37 @@ func (s server) handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s server) handleClients(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.clientQueryer == nil {
+		http.Error(w, "client traffic buckets are unavailable", http.StatusNotImplemented)
+		return
+	}
+
+	from, to, err := parseRangeFromRequest(r, s.now(), s.location)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	clientIP := strings.TrimSpace(r.URL.Query().Get("client_ip"))
+	rows, err := s.clientQueryer.QueryClientBuckets(r.Context(), from, to, clientIP)
+	if err != nil {
+		http.Error(w, "query client traffic buckets", http.StatusInternalServerError)
+		return
+	}
+
+	response := buildClientsResponse(from, to, rows)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		return
+	}
+}
+
 func (s server) staticHandler() http.Handler {
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
@@ -190,6 +236,29 @@ type breakdownRow struct {
 	Packets   int64  `json:"packets"`
 }
 
+type clientsResponse struct {
+	Range     responseRange        `json:"range"`
+	Clients   []clientSummaryRow   `json:"clients"`
+	Breakdown []clientBreakdownRow `json:"breakdown"`
+}
+
+type clientSummaryRow struct {
+	ClientIP      string `json:"client_ip"`
+	ClientMAC     string `json:"client_mac"`
+	UploadBytes   int64  `json:"upload_bytes"`
+	DownloadBytes int64  `json:"download_bytes"`
+	Packets       int64  `json:"packets"`
+}
+
+type clientBreakdownRow struct {
+	ClientIP  string `json:"client_ip"`
+	ClientMAC string `json:"client_mac"`
+	Direction string `json:"direction"`
+	Protocol  string `json:"protocol"`
+	Bytes     int64  `json:"bytes"`
+	Packets   int64  `json:"packets"`
+}
+
 func buildTrafficResponse(from, to time.Time, rows []store.BucketRow) trafficResponse {
 	response := trafficResponse{
 		Range: responseRange{
@@ -238,6 +307,86 @@ func buildTrafficResponse(from, to time.Time, rows []store.BucketRow) trafficRes
 	})
 	for _, start := range starts {
 		response.Series = append(response.Series, *seriesByStart[start])
+	}
+
+	breakdownKeys := make([]string, 0, len(breakdownByKey))
+	for key := range breakdownByKey {
+		breakdownKeys = append(breakdownKeys, key)
+	}
+	sort.Strings(breakdownKeys)
+	for _, key := range breakdownKeys {
+		response.Breakdown = append(response.Breakdown, *breakdownByKey[key])
+	}
+
+	return response
+}
+
+func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clientsResponse {
+	response := clientsResponse{
+		Range: responseRange{
+			From: from.UTC().Format(time.RFC3339),
+			To:   to.UTC().Format(time.RFC3339),
+		},
+		Clients:   []clientSummaryRow{},
+		Breakdown: []clientBreakdownRow{},
+	}
+
+	summaryByClient := make(map[string]*clientSummaryRow)
+	breakdownByKey := make(map[string]*clientBreakdownRow)
+
+	for _, row := range rows {
+		clientIP := row.Key.ClientIP.String()
+		clientKey := clientIP + "\x00" + row.Key.ClientMAC
+		summary := summaryByClient[clientKey]
+		if summary == nil {
+			summary = &clientSummaryRow{
+				ClientIP:  clientIP,
+				ClientMAC: row.Key.ClientMAC,
+			}
+			summaryByClient[clientKey] = summary
+		}
+		switch row.Key.Direction {
+		case traffic.DirectionUpload:
+			summary.UploadBytes += row.Value.Bytes
+		case traffic.DirectionDownload:
+			summary.DownloadBytes += row.Value.Bytes
+		}
+		summary.Packets += row.Value.Packets
+
+		breakdownKey := clientKey + "\x00" + string(row.Key.Direction) + "\x00" + row.Key.Protocol
+		breakdown := breakdownByKey[breakdownKey]
+		if breakdown == nil {
+			breakdown = &clientBreakdownRow{
+				ClientIP:  clientIP,
+				ClientMAC: row.Key.ClientMAC,
+				Direction: string(row.Key.Direction),
+				Protocol:  row.Key.Protocol,
+			}
+			breakdownByKey[breakdownKey] = breakdown
+		}
+		breakdown.Bytes += row.Value.Bytes
+		breakdown.Packets += row.Value.Packets
+	}
+
+	clientKeys := make([]string, 0, len(summaryByClient))
+	for key := range summaryByClient {
+		clientKeys = append(clientKeys, key)
+	}
+	sort.Slice(clientKeys, func(i, j int) bool {
+		left := summaryByClient[clientKeys[i]]
+		right := summaryByClient[clientKeys[j]]
+		leftTotal := left.UploadBytes + left.DownloadBytes
+		rightTotal := right.UploadBytes + right.DownloadBytes
+		if leftTotal != rightTotal {
+			return leftTotal > rightTotal
+		}
+		if left.ClientIP != right.ClientIP {
+			return left.ClientIP < right.ClientIP
+		}
+		return left.ClientMAC < right.ClientMAC
+	})
+	for _, key := range clientKeys {
+		response.Clients = append(response.Clients, *summaryByClient[key])
 	}
 
 	breakdownKeys := make([]string, 0, len(breakdownByKey))

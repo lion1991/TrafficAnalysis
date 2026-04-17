@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/netip"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -12,6 +13,11 @@ import (
 
 type BucketRow struct {
 	Key   traffic.BucketKey
+	Value traffic.BucketValue
+}
+
+type ClientBucketRow struct {
+	Key   traffic.ClientBucketKey
 	Value traffic.BucketValue
 }
 
@@ -61,6 +67,18 @@ CREATE TABLE IF NOT EXISTS traffic_buckets (
 	PRIMARY KEY (bucket_start, direction, protocol)
 );
 CREATE INDEX IF NOT EXISTS idx_traffic_buckets_start ON traffic_buckets(bucket_start);
+CREATE TABLE IF NOT EXISTS client_buckets (
+	bucket_start INTEGER NOT NULL,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (bucket_start, client_ip, client_mac, direction, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_client_buckets_start ON client_buckets(bucket_start);
+CREATE INDEX IF NOT EXISTS idx_client_buckets_client_ip ON client_buckets(client_ip, bucket_start);
 `)
 	return err
 }
@@ -105,6 +123,48 @@ ON CONFLICT(bucket_start, direction, protocol) DO UPDATE SET
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) UpsertClientBuckets(ctx context.Context, buckets map[traffic.ClientBucketKey]traffic.BucketValue) error {
+	if len(buckets) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO client_buckets (bucket_start, client_ip, client_mac, direction, protocol, bytes, packets)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(bucket_start, client_ip, client_mac, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for key, value := range buckets {
+		_, err := stmt.ExecContext(
+			ctx,
+			key.Start.UTC().Unix(),
+			key.ClientIP.String(),
+			key.ClientMAC,
+			string(key.Direction),
+			key.Protocol,
+			value.Bytes,
+			value.Packets,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) QueryBuckets(ctx context.Context, from, to time.Time) ([]BucketRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT bucket_start, direction, protocol, bytes, packets
@@ -131,6 +191,69 @@ ORDER BY bucket_start ASC, direction ASC, protocol ASC;
 		result = append(result, BucketRow{
 			Key: traffic.BucketKey{
 				Start:     time.Unix(startUnix, 0).UTC(),
+				Direction: traffic.Direction(direction),
+				Protocol:  protocol,
+			},
+			Value: traffic.BucketValue{
+				Bytes:   bytes,
+				Packets: packets,
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]ClientBucketRow, error) {
+	const queryAll = `
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protocol ASC;
+`
+	const queryClient = `
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_buckets
+WHERE bucket_start >= ? AND bucket_start < ? AND client_ip = ?
+ORDER BY bucket_start ASC, client_ip ASC, client_mac ASC, direction ASC, protocol ASC;
+`
+
+	var rows *sql.Rows
+	var err error
+	if clientIP == "" {
+		rows, err = s.db.QueryContext(ctx, queryAll, from.UTC().Unix(), to.UTC().Unix())
+	} else {
+		rows, err = s.db.QueryContext(ctx, queryClient, from.UTC().Unix(), to.UTC().Unix(), clientIP)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []ClientBucketRow
+	for rows.Next() {
+		var startUnix int64
+		var clientIPText string
+		var clientMAC string
+		var direction string
+		var protocol string
+		var bytes int64
+		var packets int64
+		if err := rows.Scan(&startUnix, &clientIPText, &clientMAC, &direction, &protocol, &bytes, &packets); err != nil {
+			return nil, err
+		}
+
+		clientAddr, err := netip.ParseAddr(clientIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, ClientBucketRow{
+			Key: traffic.ClientBucketKey{
+				Start:     time.Unix(startUnix, 0).UTC(),
+				ClientIP:  clientAddr,
+				ClientMAC: clientMAC,
 				Direction: traffic.Direction(direction),
 				Protocol:  protocol,
 			},

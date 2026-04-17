@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -15,15 +16,24 @@ import (
 )
 
 type fakeBucketQueryer struct {
-	from time.Time
-	to   time.Time
-	rows []store.BucketRow
+	from       time.Time
+	to         time.Time
+	clientIP   string
+	rows       []store.BucketRow
+	clientRows []store.ClientBucketRow
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
 	f.from = from
 	f.to = to
 	return f.rows, nil
+}
+
+func (f *fakeBucketQueryer) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]store.ClientBucketRow, error) {
+	f.from = from
+	f.to = to
+	f.clientIP = clientIP
+	return f.clientRows, nil
 }
 
 func TestTrafficAPIReturnsTotalsSeriesAndBreakdown(t *testing.T) {
@@ -141,6 +151,76 @@ func TestTrafficAPIRejectsInvalidRanges(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "from must be before to") {
 		t.Fatalf("expected validation message, got %q", rec.Body.String())
 	}
+}
+
+func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
+	queryer := &fakeBucketQueryer{
+		clientRows: []store.ClientBucketRow{
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.22"),
+					ClientMAC: "00:11:22:33:44:55",
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 1200, Packets: 3},
+			},
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.22"),
+					ClientMAC: "00:11:22:33:44:55",
+					Direction: traffic.DirectionDownload,
+					Protocol:  "udp",
+				},
+				Value: traffic.BucketValue{Bytes: 3400, Packets: 4},
+			},
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.23"),
+					ClientMAC: "66:77:88:99:aa:bb",
+					Direction: traffic.DirectionDownload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 5600, Packets: 5},
+			},
+		},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/clients?from=2026-04-17%2010:00&to=2026-04-17%2010:03&client_ip=192.168.248.22", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.clientIP != "192.168.248.22" {
+		t.Fatalf("expected client filter to be passed through, got %q", queryer.clientIP)
+	}
+
+	var body clientsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Clients) != 2 {
+		t.Fatalf("expected 2 clients, got %d: %#v", len(body.Clients), body.Clients)
+	}
+	if body.Clients[0].ClientIP != "192.168.248.23" || body.Clients[0].DownloadBytes != 5600 {
+		t.Fatalf("expected clients sorted by total bytes descending, got %#v", body.Clients)
+	}
+	if body.Clients[1].ClientIP != "192.168.248.22" || body.Clients[1].UploadBytes != 1200 || body.Clients[1].DownloadBytes != 3400 {
+		t.Fatalf("unexpected second client: %#v", body.Clients[1])
+	}
+	if len(body.Breakdown) != 3 {
+		t.Fatalf("expected 3 breakdown rows, got %d: %#v", len(body.Breakdown), body.Breakdown)
+	}
+}
+
+func trafficMustAddr(value string) netip.Addr {
+	return netip.MustParseAddr(value)
 }
 
 func TestStaticUIIsServedAtRoot(t *testing.T) {

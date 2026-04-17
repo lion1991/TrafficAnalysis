@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -8,6 +9,14 @@ import (
 
 type BucketKey struct {
 	Start     time.Time
+	Direction Direction
+	Protocol  string
+}
+
+type ClientBucketKey struct {
+	Start     time.Time
+	ClientIP  netip.Addr
+	ClientMAC string
 	Direction Direction
 	Protocol  string
 }
@@ -102,4 +111,76 @@ func SortedBucketKeys(buckets map[BucketKey]BucketValue) []BucketKey {
 		return keys[i].Protocol < keys[j].Protocol
 	})
 	return keys
+}
+
+type ClientAggregator struct {
+	mu       sync.Mutex
+	interval time.Duration
+	buckets  map[ClientBucketKey]BucketValue
+}
+
+func NewClientAggregator(interval time.Duration) *ClientAggregator {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return &ClientAggregator{
+		interval: interval,
+		buckets:  make(map[ClientBucketKey]BucketValue),
+	}
+}
+
+func (a *ClientAggregator) Add(packet Packet, client ClientTraffic) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	protocol := packet.Protocol
+	if protocol == "" {
+		protocol = "unknown"
+	}
+
+	key := ClientBucketKey{
+		Start:     packet.Timestamp.Truncate(a.interval).UTC(),
+		ClientIP:  client.ClientIP,
+		ClientMAC: client.ClientMAC,
+		Direction: client.Direction,
+		Protocol:  protocol,
+	}
+	value := a.buckets[key]
+	value.Bytes += int64(packet.Bytes)
+	value.Packets++
+	a.buckets[key] = value
+}
+
+func (a *ClientAggregator) Snapshot() map[ClientBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	snapshot := make(map[ClientBucketKey]BucketValue, len(a.buckets))
+	for key, value := range a.buckets {
+		snapshot[key] = value
+	}
+	return snapshot
+}
+
+func (a *ClientAggregator) DrainBefore(cutoff time.Time) map[ClientBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := make(map[ClientBucketKey]BucketValue)
+	for key, value := range a.buckets {
+		if key.Start.Before(cutoff) {
+			drained[key] = value
+			delete(a.buckets, key)
+		}
+	}
+	return drained
+}
+
+func (a *ClientAggregator) DrainAll() map[ClientBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := a.buckets
+	a.buckets = make(map[ClientBucketKey]BucketValue)
+	return drained
 }

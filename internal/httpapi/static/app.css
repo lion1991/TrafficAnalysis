@@ -83,7 +83,7 @@ h2 {
 
 .controls {
   display: grid;
-  grid-template-columns: 1.1fr 1.2fr 1.2fr auto auto;
+  grid-template-columns: 1fr 1.1fr 1.1fr 1.1fr auto auto;
   gap: 12px;
   margin: 18px 0;
   align-items: end;
@@ -250,7 +250,7 @@ canvas {
 
 .grid {
   display: grid;
-  grid-template-columns: 1.45fr 0.8fr;
+  grid-template-columns: 1.35fr 1fr 0.85fr;
   gap: 18px;
 }
 
