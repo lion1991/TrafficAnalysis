@@ -148,7 +148,7 @@ function mergeLiveClients(clients) {
     };
     clientsByKey.set(key, {
       ...existing,
-      display_name: existing.alias || row.display_name || existing.display_name,
+      display_name: existing.alias || existing.learned_name || liveDisplayName(row, existing),
       upload_bps: row.upload_bps || 0,
       download_bps: row.download_bps || 0,
       live_packets: row.packets || 0,
@@ -166,6 +166,15 @@ function mergeLiveClients(clients) {
     }
   }
   renderClientRows();
+}
+
+function liveDisplayName(row, existing) {
+  const liveName = String(row.display_name || "").trim();
+  const liveFallbacks = new Set([String(row.client_ip || ""), String(row.client_mac || "")]);
+  if (liveName && !liveFallbacks.has(liveName)) {
+    return liveName;
+  }
+  return existing.display_name || row.display_name || row.client_ip || row.client_mac;
 }
 
 function renderClientRows() {

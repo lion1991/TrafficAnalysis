@@ -468,3 +468,16 @@ func TestClientsPagePreservesAliasDraftsDuringLiveRefresh(t *testing.T) {
 		}
 	}
 }
+
+func TestClientsPageDoesNotReplaceLearnedNameWithLiveFallback(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/clients.js")
+	if err != nil {
+		t.Fatalf("read clients.js: %v", err)
+	}
+
+	for _, want := range []string{"function liveDisplayName", "existing.learned_name || liveDisplayName(row, existing)", "return existing.display_name || row.display_name || row.client_ip || row.client_mac"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected live refresh to keep learned client names before fallback display names with %q", want)
+		}
+	}
+}
