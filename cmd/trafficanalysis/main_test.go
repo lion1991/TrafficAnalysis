@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -10,6 +11,14 @@ import (
 
 	"trafficanalysis/internal/traffic"
 )
+
+type fakeLiveAliasResolver struct {
+	alias string
+}
+
+func (f fakeLiveAliasResolver) ResolveClientAlias(ctx context.Context, clientIP, clientMAC string) (string, error) {
+	return f.alias, nil
+}
 
 func TestFormatLiveStatsIncludesRatesDirectionsAndWANIP(t *testing.T) {
 	line := formatLiveStats(
@@ -296,6 +305,27 @@ func TestBuildHTTPLiveSnapshotIncludesWANRatesAndCounters(t *testing.T) {
 	}
 	if len(snapshot.Clients) != 1 || snapshot.Clients[0].DisplayName != "nas-box" || snapshot.Clients[0].DownloadBPS != 1024 {
 		t.Fatalf("unexpected live clients: %#v", snapshot.Clients)
+	}
+}
+
+func TestLiveClientNameResolverPrefersStoredAlias(t *testing.T) {
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	clientMAC := "00:11:22:33:44:55"
+	nameCache := newClientNameCache()
+	nameCache.Observe([]traffic.NameObservation{
+		{
+			Timestamp: time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC),
+			IP:        clientIP,
+			MAC:       clientMAC,
+			Name:      "nas-box-mdns",
+			Source:    "mdns",
+		},
+	})
+
+	resolve := liveClientNameResolver(context.Background(), fakeLiveAliasResolver{alias: "书房 NAS"}, nameCache)
+	name, source := resolve(clientIP, clientMAC)
+	if name != "书房 NAS" || source != "alias" {
+		t.Fatalf("expected live resolver to prefer alias, got name=%q source=%q", name, source)
 	}
 }
 

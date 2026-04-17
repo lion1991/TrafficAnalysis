@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/netip"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -100,6 +101,7 @@ CREATE TABLE IF NOT EXISTS client_aliases (
 	updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_client_aliases_mac ON client_aliases(client_mac);
+CREATE INDEX IF NOT EXISTS idx_client_aliases_ip ON client_aliases(client_ip);
 `)
 	return err
 }
@@ -236,6 +238,9 @@ ON CONFLICT(client_ip, client_mac) DO UPDATE SET
 }
 
 func (s *SQLiteStore) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
+	clientIP = strings.TrimSpace(clientIP)
+	clientMAC = normalizeMAC(clientMAC)
+	alias = strings.TrimSpace(alias)
 	if clientIP == "" && clientMAC == "" {
 		return nil
 	}
@@ -261,10 +266,61 @@ ON CONFLICT(client_key) DO UPDATE SET
 }
 
 func clientAliasKey(clientIP, clientMAC string) string {
+	clientMAC = normalizeMAC(clientMAC)
 	if clientMAC != "" {
 		return clientMAC
 	}
-	return clientIP
+	return strings.TrimSpace(clientIP)
+}
+
+func normalizeMAC(mac string) string {
+	return strings.ToLower(strings.TrimSpace(mac))
+}
+
+func (s *SQLiteStore) ResolveClientAlias(ctx context.Context, clientIP, clientMAC string) (string, error) {
+	clientIP = strings.TrimSpace(clientIP)
+	clientMAC = normalizeMAC(clientMAC)
+	if clientIP == "" && clientMAC == "" {
+		return "", nil
+	}
+
+	if clientMAC != "" {
+		alias, err := s.resolveClientAliasByMAC(ctx, clientMAC)
+		if err != nil || alias != "" {
+			return alias, err
+		}
+	}
+	if clientIP == "" {
+		return "", nil
+	}
+
+	var alias string
+	err := s.db.QueryRowContext(ctx, `
+SELECT alias
+FROM client_aliases
+WHERE client_ip = ?
+ORDER BY updated_at DESC
+LIMIT 1;
+`, clientIP).Scan(&alias)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return alias, err
+}
+
+func (s *SQLiteStore) resolveClientAliasByMAC(ctx context.Context, clientMAC string) (string, error) {
+	var alias string
+	err := s.db.QueryRowContext(ctx, `
+SELECT alias
+FROM client_aliases
+WHERE client_key = ? OR client_mac = ?
+ORDER BY updated_at DESC
+LIMIT 1;
+`, clientMAC, clientMAC).Scan(&alias)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return alias, err
 }
 
 func (s *SQLiteStore) QueryBuckets(ctx context.Context, from, to time.Time) ([]BucketRow, error) {
@@ -311,21 +367,51 @@ ORDER BY bucket_start ASC, direction ASC, protocol ASC;
 func (s *SQLiteStore) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]ClientBucketRow, error) {
 	const queryAll = `
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
-       COALESCE(ca.alias, ''),
+       COALESCE((
+          SELECT alias
+          FROM (
+             SELECT ca.alias, ca.updated_at,
+                    CASE
+                       WHEN cb.client_mac != '' AND ca.client_key = cb.client_mac THEN 0
+                       WHEN cb.client_mac != '' AND ca.client_mac = cb.client_mac THEN 1
+                       WHEN ca.client_ip = cb.client_ip THEN 2
+                       ELSE 3
+                    END AS alias_priority
+             FROM client_aliases ca
+             WHERE (cb.client_mac != '' AND (ca.client_key = cb.client_mac OR ca.client_mac = cb.client_mac))
+                OR ca.client_ip = cb.client_ip
+          )
+          ORDER BY alias_priority ASC, updated_at DESC
+          LIMIT 1
+       ), ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
 FROM client_buckets cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
-LEFT JOIN client_aliases ca ON ca.client_key = CASE WHEN cb.client_mac != '' THEN cb.client_mac ELSE cb.client_ip END
 WHERE cb.bucket_start >= ? AND cb.bucket_start < ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 	const queryClient = `
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
-       COALESCE(ca.alias, ''),
+       COALESCE((
+          SELECT alias
+          FROM (
+             SELECT ca.alias, ca.updated_at,
+                    CASE
+                       WHEN cb.client_mac != '' AND ca.client_key = cb.client_mac THEN 0
+                       WHEN cb.client_mac != '' AND ca.client_mac = cb.client_mac THEN 1
+                       WHEN ca.client_ip = cb.client_ip THEN 2
+                       ELSE 3
+                    END AS alias_priority
+             FROM client_aliases ca
+             WHERE (cb.client_mac != '' AND (ca.client_key = cb.client_mac OR ca.client_mac = cb.client_mac))
+                OR ca.client_ip = cb.client_ip
+          )
+          ORDER BY alias_priority ASC, updated_at DESC
+          LIMIT 1
+       ), ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
 FROM client_buckets cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
-LEFT JOIN client_aliases ca ON ca.client_key = CASE WHEN cb.client_mac != '' THEN cb.client_mac ELSE cb.client_ip END
 WHERE cb.bucket_start >= ? AND cb.bucket_start < ? AND cb.client_ip = ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `

@@ -260,3 +260,33 @@ func TestSQLiteStoreClientAliasOverridesLearnedName(t *testing.T) {
 		t.Fatalf("expected alias to clear, got %q", rows[0].Alias)
 	}
 }
+
+func TestSQLiteStoreResolvesClientAliasForLiveTraffic(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertClientAlias(ctx, "192.168.248.22", "00:11:22:33:44:55", "书房 NAS"); err != nil {
+		t.Fatalf("upsert mac alias: %v", err)
+	}
+	alias, err := store.ResolveClientAlias(ctx, "192.168.248.22", "00:11:22:33:44:55")
+	if err != nil {
+		t.Fatalf("resolve mac alias: %v", err)
+	}
+	if alias != "书房 NAS" {
+		t.Fatalf("expected alias by mac, got %q", alias)
+	}
+
+	alias, err = store.ResolveClientAlias(ctx, "192.168.248.22", "")
+	if err != nil {
+		t.Fatalf("resolve ip fallback alias: %v", err)
+	}
+	if alias != "书房 NAS" {
+		t.Fatalf("expected live traffic without mac to fall back to ip alias, got %q", alias)
+	}
+}

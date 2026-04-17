@@ -358,7 +358,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				web.liveInterval,
 				webMeter.SnapshotAndResetDetailed(0),
 				webClientMeter.SnapshotAndReset(100),
-				nameCache.Resolve,
+				liveClientNameResolver(context.Background(), st, nameCache),
 			))
 		}
 	}
@@ -825,6 +825,10 @@ type cachedClientName struct {
 	source string
 }
 
+type clientAliasResolver interface {
+	ResolveClientAlias(ctx context.Context, clientIP, clientMAC string) (string, error)
+}
+
 type clientNameCache struct {
 	mu    sync.RWMutex
 	names map[string]cachedClientName
@@ -855,6 +859,21 @@ func (c *clientNameCache) Resolve(ip netip.Addr, mac string) (string, string) {
 
 	name := c.names[clientNameKey(ip, mac)]
 	return name.name, name.source
+}
+
+func liveClientNameResolver(ctx context.Context, aliases clientAliasResolver, names *clientNameCache) func(netip.Addr, string) (string, string) {
+	return func(ip netip.Addr, mac string) (string, string) {
+		if aliases != nil {
+			alias, err := aliases.ResolveClientAlias(ctx, ip.String(), mac)
+			if err == nil && strings.TrimSpace(alias) != "" {
+				return alias, "alias"
+			}
+		}
+		if names == nil {
+			return "", ""
+		}
+		return names.Resolve(ip, mac)
+	}
 }
 
 func clientNameKey(ip netip.Addr, mac string) string {
