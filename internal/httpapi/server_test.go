@@ -455,3 +455,16 @@ func TestClientsPageUsesStableDefaultSortAndSortableHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestClientsPagePreservesAliasDraftsDuringLiveRefresh(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/clients.js")
+	if err != nil {
+		t.Fatalf("read clients.js: %v", err)
+	}
+
+	for _, want := range []string{"function captureAliasDrafts", "function restoreAliasDrafts", "document.activeElement", "data-alias-input-key"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected clients script to preserve alias edits during realtime refresh with %q", want)
+		}
+	}
+}

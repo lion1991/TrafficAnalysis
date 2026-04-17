@@ -169,6 +169,7 @@ function mergeLiveClients(clients) {
 }
 
 function renderClientRows() {
+  const aliasDrafts = captureAliasDrafts();
   const rows = Array.from(clientsByKey.values()).sort(compareClientRows);
 
   const historicalRows = rows.filter((row) => !row.live_only);
@@ -194,7 +195,37 @@ function renderClientRows() {
 
   elements.clientsBody.innerHTML = rows.map(renderClientRow).join("");
   bindAliasButtons();
+  restoreAliasDrafts(aliasDrafts);
   renderSortHeaders();
+}
+
+function captureAliasDrafts() {
+  const drafts = new Map();
+  const activeKey = document.activeElement?.dataset?.aliasInputKey || "";
+  for (const input of elements.clientsBody.querySelectorAll("[data-alias-input-key]")) {
+    const key = input.dataset.aliasInputKey;
+    drafts.set(key, {
+      value: input.value,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      focused: key === activeKey,
+    });
+  }
+  return drafts;
+}
+
+function restoreAliasDrafts(drafts) {
+  for (const input of elements.clientsBody.querySelectorAll("[data-alias-input-key]")) {
+    const draft = drafts.get(input.dataset.aliasInputKey);
+    if (!draft) {
+      continue;
+    }
+    input.value = draft.value;
+    if (draft.focused) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+    }
+  }
 }
 
 function compareClientRows(left, right) {
@@ -273,7 +304,7 @@ function renderClientRow(row) {
       <td>${Number(row.packets || 0).toLocaleString()}</td>
       <td>
         <div class="aliasEditor">
-          <input type="text" value="${escapeAttribute(row.alias || "")}" placeholder="${escapeAttribute(row.learned_name || row.display_name || "设备别名")}" aria-label="设备别名" />
+          <input type="text" data-alias-input-key="${key}" value="${escapeAttribute(row.alias || "")}" placeholder="${escapeAttribute(row.learned_name || row.display_name || "设备别名")}" aria-label="设备别名" />
           <button type="button" data-alias-key="${key}">保存</button>
         </div>
       </td>
