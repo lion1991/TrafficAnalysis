@@ -194,7 +194,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		errCh <- runner(ctx, func(packet traffic.Packet) {
 			direction := classifier.Classify(packet)
 			aggregator.Add(packet, direction)
-			meter.Add(direction, packet.Bytes)
+			meter.AddPacket(direction, packet)
 		})
 	}()
 
@@ -225,7 +225,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			}
 		case now := <-liveC:
 			wanIP, ok := manager.Current()
-			fmt.Println(formatLiveStats(now.UTC(), wanIP, ok, output.interval, meter.SnapshotAndReset()))
+			fmt.Println(formatLiveSnapshot(now.UTC(), wanIP, ok, output.interval, meter.SnapshotAndResetDetailed(3)))
 		}
 	}
 }
@@ -373,6 +373,11 @@ func formatBytes(bytes int64) string {
 }
 
 func formatLiveStats(now time.Time, wanIP netip.Addr, wanOK bool, interval time.Duration, stats map[traffic.Direction]traffic.DirectionCounters) string {
+	return formatLiveSnapshot(now, wanIP, wanOK, interval, traffic.MeterSnapshot{Directions: stats})
+}
+
+func formatLiveSnapshot(now time.Time, wanIP netip.Addr, wanOK bool, interval time.Duration, snapshot traffic.MeterSnapshot) string {
+	stats := snapshot.Directions
 	upload := stats[traffic.DirectionUpload]
 	download := stats[traffic.DirectionDownload]
 	other := stats[traffic.DirectionOther]
@@ -384,7 +389,7 @@ func formatLiveStats(now time.Time, wanIP netip.Addr, wanOK bool, interval time.
 		wanText = wanIP.String()
 	}
 
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"%s wan=%s upload=%s download=%s other=%s unknown=%s up_rate=%s/s down_rate=%s/s packets=%d",
 		now.Format(time.RFC3339),
 		wanText,
@@ -396,6 +401,41 @@ func formatLiveStats(now time.Time, wanIP netip.Addr, wanOK bool, interval time.
 		formatBytes(rateBytes(download.Bytes, interval)),
 		totalPackets,
 	)
+	if top := formatTopConversations(snapshot.Conversations[traffic.DirectionOther]); top != "" {
+		line += " other_top=" + top
+	}
+	if top := formatTopConversations(snapshot.Conversations[traffic.DirectionUnknown]); top != "" {
+		line += " unknown_top=" + top
+	}
+	return line
+}
+
+func formatTopConversations(conversations []traffic.ConversationCounters) string {
+	if len(conversations) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(conversations))
+	for _, conversation := range conversations {
+		parts = append(parts, fmt.Sprintf(
+			"%s->%s/%s:%s",
+			formatEndpoint(conversation.Key.SrcIP, conversation.Key.SrcPort),
+			formatEndpoint(conversation.Key.DstIP, conversation.Key.DstPort),
+			conversation.Key.Protocol,
+			formatBytes(conversation.Bytes),
+		))
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatEndpoint(addr netip.Addr, port uint16) string {
+	if port == 0 {
+		return addr.String()
+	}
+	if addr.Is6() {
+		return fmt.Sprintf("[%s]:%d", addr, port)
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
 }
 
 func rateBytes(bytes int64, interval time.Duration) int64 {

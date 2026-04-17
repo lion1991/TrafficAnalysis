@@ -49,7 +49,7 @@ Example:
 {
   "interface": "eth1",
   "database": "traffic.db",
-  "bpf": "ip or ip6",
+  "bpf": "",
   "snapshot_len": 262144,
   "promiscuous": true,
   "bucket_seconds": 60,
@@ -88,6 +88,8 @@ sudo ./trafficanalysis capture -config config.json -live-interval 2s
 ```
 
 Set `"live_seconds": 0` to make config-based live output silent by default.
+
+The default `bpf` is empty so PPPoE or VLAN-encapsulated WAN traffic is not filtered out before decoding. If you need a filter, set it explicitly after confirming the capture format with tcpdump.
 
 Import a pcap file for offline testing:
 

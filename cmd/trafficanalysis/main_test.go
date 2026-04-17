@@ -38,6 +38,44 @@ func TestFormatLiveStatsIncludesRatesDirectionsAndWANIP(t *testing.T) {
 	}
 }
 
+func TestFormatLiveSnapshotIncludesOtherTopConversations(t *testing.T) {
+	line := formatLiveSnapshot(
+		time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC),
+		netip.MustParseAddr("203.0.113.10"),
+		true,
+		time.Second,
+		traffic.MeterSnapshot{
+			Directions: map[traffic.Direction]traffic.DirectionCounters{
+				traffic.DirectionOther: {Bytes: 1200, Packets: 1},
+			},
+			Conversations: map[traffic.Direction][]traffic.ConversationCounters{
+				traffic.DirectionOther: {
+					{
+						Key: traffic.ConversationKey{
+							SrcIP:    netip.MustParseAddr("2001:db8::10"),
+							DstIP:    netip.MustParseAddr("2001:db8::20"),
+							SrcPort:  443,
+							DstPort:  53000,
+							Protocol: "tcp",
+						},
+						Bytes:   1200,
+						Packets: 1,
+					},
+				},
+			},
+		},
+	)
+
+	for _, want := range []string{
+		"other=1.17 KiB",
+		"other_top=[2001:db8::10]:443->[2001:db8::20]:53000/tcp:1.17 KiB",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected line to contain %q, got %q", want, line)
+		}
+	}
+}
+
 func TestResolveLiveOutputOptionsHonorsQuietAndIntervalOverride(t *testing.T) {
 	cfg := captureOutputConfig{
 		live:         true,

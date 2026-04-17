@@ -1,7 +1,7 @@
 {
   "interface": "eth1",
   "database": "traffic.db",
-  "bpf": "ip or ip6",
+  "bpf": "",
   "snapshot_len": 262144,
   "promiscuous": true,
   "bucket_seconds": 60,

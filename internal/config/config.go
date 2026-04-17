@@ -28,7 +28,7 @@ type WANIPConfig struct {
 func Default() Config {
 	return Config{
 		Database:      "traffic.db",
-		BPF:           "ip or ip6",
+		BPF:           "",
 		SnapshotLen:   262144,
 		Promiscuous:   true,
 		BucketSeconds: 60,
@@ -62,9 +62,6 @@ func (c *Config) applyDefaults() {
 	defaults := Default()
 	if c.Database == "" {
 		c.Database = defaults.Database
-	}
-	if c.BPF == "" {
-		c.BPF = defaults.BPF
 	}
 	if c.SnapshotLen <= 0 {
 		c.SnapshotLen = defaults.SnapshotLen
