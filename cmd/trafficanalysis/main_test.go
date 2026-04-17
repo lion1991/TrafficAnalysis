@@ -143,3 +143,66 @@ func TestResolveLiveOutputOptionsHonorsQuietAndIntervalOverride(t *testing.T) {
 		t.Fatalf("unexpected live output config: %#v", resolved)
 	}
 }
+
+func TestParseQueryRangeSupportsDateShortcut(t *testing.T) {
+	location := time.FixedZone("TEST", 8*60*60)
+	from, to, err := parseQueryRangeWithClock(queryRangeOptions{date: "2026-04-17"}, time.Time{}, location)
+	if err != nil {
+		t.Fatalf("parse query range: %v", err)
+	}
+
+	if from != time.Date(2026, 4, 16, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected from: %s", from)
+	}
+	if to != time.Date(2026, 4, 17, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected to: %s", to)
+	}
+}
+
+func TestParseQueryRangeSupportsMonthShortcut(t *testing.T) {
+	location := time.FixedZone("TEST", 8*60*60)
+	from, to, err := parseQueryRangeWithClock(queryRangeOptions{month: "2026-04"}, time.Time{}, location)
+	if err != nil {
+		t.Fatalf("parse query range: %v", err)
+	}
+
+	if from != time.Date(2026, 3, 31, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected from: %s", from)
+	}
+	if to != time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected to: %s", to)
+	}
+}
+
+func TestParseQueryRangeSupportsLocalTimeRangeWithoutRFC3339(t *testing.T) {
+	location := time.FixedZone("TEST", 8*60*60)
+	from, to, err := parseQueryRangeWithClock(queryRangeOptions{
+		from: "2026-04-17 00:00",
+		to:   "2026-04-18 00:00",
+	}, time.Time{}, location)
+	if err != nil {
+		t.Fatalf("parse query range: %v", err)
+	}
+
+	if from != time.Date(2026, 4, 16, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected from: %s", from)
+	}
+	if to != time.Date(2026, 4, 17, 16, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected to: %s", to)
+	}
+}
+
+func TestParseQueryRangeSupportsDayDurations(t *testing.T) {
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	from, to, err := parseQueryRangeWithClock(queryRangeOptions{last: "7d"}, now, time.UTC)
+	if err != nil {
+		t.Fatalf("parse query range: %v", err)
+	}
+
+	if to != now {
+		t.Fatalf("unexpected to: %s", to)
+	}
+	if from != now.Add(-7*24*time.Hour) {
+		t.Fatalf("unexpected from: %s", from)
+	}
+}

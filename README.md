@@ -111,7 +111,33 @@ Last hour:
 ./trafficanalysis query -db traffic.db -last 1h
 ```
 
-Explicit range:
+Last seven days:
+
+```bash
+./trafficanalysis query -db traffic.db -last 7d
+```
+
+One local day:
+
+```bash
+./trafficanalysis query -db traffic.db -date 2026-04-17
+```
+
+One local month:
+
+```bash
+./trafficanalysis query -db traffic.db -month 2026-04
+```
+
+Explicit local range:
+
+```bash
+./trafficanalysis query -db traffic.db \
+  -from "2026-04-17 00:00" \
+  -to "2026-04-18 00:00"
+```
+
+Explicit RFC3339 range also works:
 
 ```bash
 ./trafficanalysis query -db traffic.db \

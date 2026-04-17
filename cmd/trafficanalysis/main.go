@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -268,14 +269,22 @@ func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Ag
 func runQuery(args []string) error {
 	fs := flag.NewFlagSet("query", flag.ExitOnError)
 	dbPath := fs.String("db", "traffic.db", "sqlite database path")
-	fromText := fs.String("from", "", "start time, RFC3339")
-	toText := fs.String("to", "", "end time, RFC3339")
-	lastText := fs.String("last", "1h", "relative range ending now, such as 15m or 24h")
+	dateText := fs.String("date", "", "local date to query, YYYY-MM-DD")
+	monthText := fs.String("month", "", "local month to query, YYYY-MM")
+	fromText := fs.String("from", "", "start time: RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM")
+	toText := fs.String("to", "", "end time: RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM")
+	lastText := fs.String("last", "1h", "relative range ending now, such as 15m, 24h, or 7d")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	from, to, err := parseQueryRange(*fromText, *toText, *lastText)
+	from, to, err := parseQueryRange(queryRangeOptions{
+		date:  *dateText,
+		month: *monthText,
+		from:  *fromText,
+		to:    *toText,
+		last:  *lastText,
+	})
 	if err != nil {
 		return err
 	}
@@ -296,37 +305,111 @@ func runQuery(args []string) error {
 	return nil
 }
 
-func parseQueryRange(fromText, toText, lastText string) (time.Time, time.Time, error) {
-	now := time.Now().UTC()
-	to := now
-	var err error
-	if toText != "" {
-		to, err = time.Parse(time.RFC3339, toText)
+type queryRangeOptions struct {
+	date  string
+	month string
+	from  string
+	to    string
+	last  string
+}
+
+func parseQueryRange(options queryRangeOptions) (time.Time, time.Time, error) {
+	return parseQueryRangeWithClock(options, time.Now().UTC(), time.Local)
+}
+
+func parseQueryRangeWithClock(options queryRangeOptions, now time.Time, location *time.Location) (time.Time, time.Time, error) {
+	if location == nil {
+		location = time.Local
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	if options.date != "" {
+		start, err := time.ParseInLocation("2006-01-02", options.date, location)
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
-		to = to.UTC()
+		return validateQueryRange(start.UTC(), start.AddDate(0, 0, 1).UTC())
+	}
+
+	if options.month != "" {
+		start, err := time.ParseInLocation("2006-01", options.month, location)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		return validateQueryRange(start.UTC(), start.AddDate(0, 1, 0).UTC())
+	}
+
+	to := now
+	var err error
+	if options.to != "" {
+		to, err = parseQueryTime(options.to, location)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
 	}
 
 	var from time.Time
-	if fromText != "" {
-		from, err = time.Parse(time.RFC3339, fromText)
+	if options.from != "" {
+		from, err = parseQueryTime(options.from, location)
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
-		from = from.UTC()
 	} else {
-		last, err := time.ParseDuration(lastText)
+		lastText := options.last
+		if lastText == "" {
+			lastText = "1h"
+		}
+		last, err := parseQueryDuration(lastText)
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
 		from = to.Add(-last)
 	}
 
+	return validateQueryRange(from.UTC(), to.UTC())
+}
+
+func validateQueryRange(from, to time.Time) (time.Time, time.Time, error) {
 	if !from.Before(to) {
 		return time.Time{}, time.Time{}, errors.New("from must be before to")
 	}
 	return from, to, nil
+}
+
+func parseQueryTime(text string, location *time.Location) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed.UTC(), nil
+	}
+
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		parsed, err := time.ParseInLocation(layout, text, location)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("invalid time %q; use YYYY-MM-DD, YYYY-MM-DD HH:MM, or RFC3339", text)
+}
+
+func parseQueryDuration(text string) (time.Duration, error) {
+	if strings.HasSuffix(text, "d") {
+		daysText := strings.TrimSuffix(text, "d")
+		days, err := strconv.Atoi(daysText)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(text)
 }
 
 func printRows(rows []store.BucketRow) {
@@ -471,7 +554,9 @@ func printUsage() {
 		"trafficanalysis capture -config config.json -live-interval 2s",
 		"trafficanalysis read-pcap -config config.json -pcap sample.pcap",
 		"trafficanalysis query -db traffic.db -last 1h",
-		"trafficanalysis query -db traffic.db -from 2026-04-17T00:00:00Z -to 2026-04-17T01:00:00Z",
+		"trafficanalysis query -db traffic.db -date 2026-04-17",
+		"trafficanalysis query -db traffic.db -month 2026-04",
+		"trafficanalysis query -db traffic.db -from \"2026-04-17 00:00\" -to \"2026-04-18 00:00\"",
 	}
 	fmt.Println(strings.Join(commands, "\n"))
 }
