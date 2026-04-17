@@ -320,3 +320,12 @@ func TestResolveServeConfigUsesConfigDatabaseAndOverrides(t *testing.T) {
 		t.Fatalf("expected config database, got %s", resolved.dbPath)
 	}
 }
+
+func TestDisplayListenAddrShowsWildcardAddressForAllInterfaces(t *testing.T) {
+	if got := displayListenAddr(":8080"); got != "0.0.0.0:8080" {
+		t.Fatalf("expected wildcard listen display, got %q", got)
+	}
+	if got := displayListenAddr("127.0.0.1:8080"); got != "127.0.0.1:8080" {
+		t.Fatalf("expected explicit listen display to be preserved, got %q", got)
+	}
+}

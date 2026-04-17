@@ -88,8 +88,10 @@ sudo ./trafficanalysis capture -config config.json -web-addr :8080
 Open:
 
 ```text
-http://127.0.0.1:8080
+http://<linux-server-ip>:8080
 ```
+
+`-web-addr :8080` listens on all interfaces. Use `-web-addr 127.0.0.1:8080` only if the UI should be local-only.
 
 During capture, the process prints a live line every `live_seconds` by default:
 
@@ -172,8 +174,10 @@ Start the built-in Web UI for historical SQLite queries:
 Then open:
 
 ```text
-http://127.0.0.1:8080
+http://<linux-server-ip>:8080
 ```
+
+`-addr :8080` listens on all interfaces. Bind `127.0.0.1:8080` only when a reverse proxy or SSH tunnel will expose it.
 
 The Web UI is embedded into the Go binary, so it does not require a separate Node.js frontend server. It reads the same SQLite database used by capture and query commands. You can override the database path:
 
@@ -199,12 +203,13 @@ Response contains:
 - `breakdown`: totals by direction and protocol
 
 The standalone `serve` command is suitable for historical queries against recently flushed SQLite bucket data.
+The upload/download summary cards are backed by `/api/traffic`, so they reflect data already flushed into SQLite. With the default `bucket_seconds: 60` and `flush_seconds: 10`, the current in-progress minute is not included until the bucket completes and the next flush runs.
 
 Live SSE API is available when Web UI is started from the capture process:
 
 ```bash
 sudo ./trafficanalysis capture -config config.json -web-addr :8080
-curl -N http://127.0.0.1:8080/api/live
+curl -N http://<linux-server-ip>:8080/api/live
 ```
 
 `GET /api/live` streams one JSON snapshot per second:
@@ -214,4 +219,5 @@ event: snapshot
 data: {"timestamp":"2026-04-17T12:00:00Z","wan_ip":"203.0.113.10","wan_available":true,"interval_seconds":1,"totals":{"upload_bytes":1024,"download_bytes":2048,"lan_bytes":0,"other_bytes":0,"unknown_bytes":0,"packets":8},"rates":{"upload_bps":1024,"download_bps":2048}}
 ```
 
-The Web UI auto-refresh switch uses `/api/live` first. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.
+The Web UI connects to `/api/live` as soon as the page loads. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.
+The live upload/download row is backed by `/api/live` and updates once per second from capture memory when the page is served by `capture -web-addr`.

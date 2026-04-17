@@ -202,17 +202,20 @@ function syncControls() {
 }
 
 function updateAutoRefresh() {
-  stopAutoRefresh();
+  stopPolling();
   if (elements.autoRefresh.checked) {
-    startLiveStream();
+    startPolling(5000);
   }
 }
 
-function stopAutoRefresh() {
+function stopPolling() {
   if (refreshTimer) {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
+}
+
+function stopLiveStream() {
   if (eventSource) {
     eventSource.close();
     eventSource = null;
@@ -220,8 +223,11 @@ function stopAutoRefresh() {
 }
 
 function startLiveStream() {
+  stopLiveStream();
   if (!window.EventSource) {
-    startPolling();
+    elements.status.textContent = "轮询刷新";
+    elements.status.style.background = "var(--accent)";
+    startPolling(5000);
     return;
   }
 
@@ -242,17 +248,21 @@ function startLiveStream() {
     eventSource = null;
     elements.status.textContent = "轮询刷新";
     elements.status.style.background = "var(--accent)";
-    startPolling();
+    if (!refreshTimer) {
+      startPolling(5000);
+    }
   };
 
-  refreshTimer = setInterval(loadTraffic, 30000);
+  if (!refreshTimer) {
+    startPolling(30000);
+  }
 }
 
-function startPolling() {
+function startPolling(intervalMs) {
   if (refreshTimer) {
     clearInterval(refreshTimer);
   }
-  refreshTimer = setInterval(loadTraffic, 5000);
+  refreshTimer = setInterval(loadTraffic, intervalMs);
 }
 
 elements.queryButton.addEventListener("click", loadTraffic);
@@ -268,4 +278,5 @@ window.addEventListener("resize", () => {
 });
 
 syncControls();
+startLiveStream();
 loadTraffic();

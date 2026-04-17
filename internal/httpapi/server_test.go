@@ -236,3 +236,14 @@ func TestLiveSSEReturnsUnavailableWithoutLiveSource(t *testing.T) {
 		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }
+
+func TestWebAppStartsLiveStreamOnLoad(t *testing.T) {
+	data, err := embeddedStatic.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+
+	if !strings.Contains(string(data), "syncControls();\nstartLiveStream();\nloadTraffic();") {
+		t.Fatal("expected web app to connect /api/live when the page loads")
+	}
+}
