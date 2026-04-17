@@ -290,3 +290,174 @@ func TestSQLiteStoreResolvesClientAliasForLiveTraffic(t *testing.T) {
 		t.Fatalf("expected live traffic without mac to fall back to ip alias, got %q", alias)
 	}
 }
+
+func TestSQLiteStoreCompactsMinuteBucketsToHourlyWithoutLosingTotals(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	oldHour := now.Add(-40 * 24 * time.Hour).Truncate(time.Hour)
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	clientMAC := "00:11:22:33:44:55"
+
+	if err := store.UpsertBuckets(ctx, map[traffic.BucketKey]traffic.BucketValue{
+		{Start: oldHour.Add(5 * time.Minute), Direction: traffic.DirectionUpload, Protocol: "tcp"}:    {Bytes: 1000, Packets: 2},
+		{Start: oldHour.Add(15 * time.Minute), Direction: traffic.DirectionUpload, Protocol: "tcp"}:   {Bytes: 2500, Packets: 3},
+		{Start: oldHour.Add(25 * time.Minute), Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 4096, Packets: 4},
+	}); err != nil {
+		t.Fatalf("upsert traffic buckets: %v", err)
+	}
+	if err := store.UpsertClientBuckets(ctx, map[traffic.ClientBucketKey]traffic.BucketValue{
+		{Start: oldHour.Add(5 * time.Minute), ClientIP: clientIP, ClientMAC: clientMAC, Direction: traffic.DirectionUpload, Protocol: "tcp"}:    {Bytes: 1000, Packets: 2},
+		{Start: oldHour.Add(15 * time.Minute), ClientIP: clientIP, ClientMAC: clientMAC, Direction: traffic.DirectionUpload, Protocol: "tcp"}:   {Bytes: 2500, Packets: 3},
+		{Start: oldHour.Add(25 * time.Minute), ClientIP: clientIP, ClientMAC: clientMAC, Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 4096, Packets: 4},
+	}); err != nil {
+		t.Fatalf("upsert client buckets: %v", err)
+	}
+	if err := store.UpsertClientNames(ctx, []traffic.NameObservation{
+		{Timestamp: oldHour, IP: clientIP, MAC: clientMAC, Name: "nas-box", Source: "dhcp"},
+	}); err != nil {
+		t.Fatalf("upsert client name: %v", err)
+	}
+	if err := store.UpsertClientAlias(ctx, clientIP.String(), clientMAC, "书房 NAS"); err != nil {
+		t.Fatalf("upsert alias: %v", err)
+	}
+
+	err = store.CompactAndPrune(ctx, now, RetentionPolicy{
+		MinuteRetention: 30 * 24 * time.Hour,
+		HourlyRetention: 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("compact and prune: %v", err)
+	}
+
+	var minuteRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM traffic_buckets;`).Scan(&minuteRows); err != nil {
+		t.Fatalf("count minute traffic rows: %v", err)
+	}
+	if minuteRows != 0 {
+		t.Fatalf("expected compacted minute traffic rows to be deleted, got %d", minuteRows)
+	}
+
+	rows, err := store.QueryBuckets(ctx, oldHour, oldHour.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("query compacted traffic: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected two hourly traffic rows, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].Key.Start != oldHour || rows[0].Value.Bytes != 4096 || rows[0].Value.Packets != 4 {
+		t.Fatalf("unexpected first compacted traffic row: %#v", rows[0])
+	}
+	if rows[1].Key.Start != oldHour || rows[1].Value.Bytes != 3500 || rows[1].Value.Packets != 5 {
+		t.Fatalf("unexpected second compacted traffic row: %#v", rows[1])
+	}
+
+	clientRows, err := store.QueryClientBuckets(ctx, oldHour, oldHour.Add(time.Hour), clientIP.String())
+	if err != nil {
+		t.Fatalf("query compacted clients: %v", err)
+	}
+	if len(clientRows) != 2 {
+		t.Fatalf("expected two hourly client rows, got %d: %#v", len(clientRows), clientRows)
+	}
+	if clientRows[0].Alias != "书房 NAS" || clientRows[0].Name != "nas-box" {
+		t.Fatalf("expected alias and learned name after compaction, got %#v", clientRows[0])
+	}
+	var totalBytes int64
+	var totalPackets int64
+	for _, row := range clientRows {
+		totalBytes += row.Value.Bytes
+		totalPackets += row.Value.Packets
+	}
+	if totalBytes != 7596 || totalPackets != 9 {
+		t.Fatalf("expected client totals to survive compaction, got bytes=%d packets=%d", totalBytes, totalPackets)
+	}
+}
+
+func TestSQLiteStoreArchivesHourlyBucketsOlderThanRetention(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	tooOld := now.Add(-400 * 24 * time.Hour).Truncate(time.Hour)
+	keep := now.Add(-200 * 24 * time.Hour).Truncate(time.Hour)
+	clientIP := "192.168.248.22"
+	clientMAC := "00:11:22:33:44:55"
+
+	for _, start := range []time.Time{tooOld, keep} {
+		if _, err := store.db.ExecContext(ctx, `
+INSERT INTO traffic_hourly_buckets (bucket_start, direction, protocol, bytes, packets)
+VALUES (?, ?, ?, ?, ?);
+`, start.Unix(), string(traffic.DirectionDownload), "tcp", 1000, 1); err != nil {
+			t.Fatalf("insert hourly traffic: %v", err)
+		}
+		if _, err := store.db.ExecContext(ctx, `
+INSERT INTO client_hourly_buckets (bucket_start, client_ip, client_mac, direction, protocol, bytes, packets)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+`, start.Unix(), clientIP, clientMAC, string(traffic.DirectionDownload), "tcp", 1000, 1); err != nil {
+			t.Fatalf("insert hourly client: %v", err)
+		}
+	}
+
+	err = store.CompactAndPrune(ctx, now, RetentionPolicy{
+		MinuteRetention: 30 * 24 * time.Hour,
+		HourlyRetention: 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("compact and prune: %v", err)
+	}
+
+	rows, err := store.QueryBuckets(ctx, tooOld.Add(-time.Hour), keep.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("query hourly traffic: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Key.Start != keep {
+		t.Fatalf("expected only retained hourly traffic row, got %#v", rows)
+	}
+
+	var archivedTrafficBytes int64
+	var archivedTrafficPackets int64
+	if err := store.db.QueryRowContext(ctx, `
+SELECT bytes, packets
+FROM traffic_archive_buckets
+WHERE direction = ? AND protocol = ?;
+`, string(traffic.DirectionDownload), "tcp").Scan(&archivedTrafficBytes, &archivedTrafficPackets); err != nil {
+		t.Fatalf("query archived traffic: %v", err)
+	}
+	if archivedTrafficBytes != 1000 || archivedTrafficPackets != 1 {
+		t.Fatalf("expected old hourly traffic to be archived, got bytes=%d packets=%d", archivedTrafficBytes, archivedTrafficPackets)
+	}
+
+	clientRows, err := store.QueryClientBuckets(ctx, tooOld.Add(-time.Hour), keep.Add(time.Hour), clientIP)
+	if err != nil {
+		t.Fatalf("query hourly clients: %v", err)
+	}
+	if len(clientRows) != 1 || clientRows[0].Key.Start != keep {
+		t.Fatalf("expected only retained hourly client row, got %#v", clientRows)
+	}
+
+	var archivedClientBytes int64
+	var archivedClientPackets int64
+	if err := store.db.QueryRowContext(ctx, `
+SELECT bytes, packets
+FROM client_archive_buckets
+WHERE client_ip = ? AND client_mac = ? AND direction = ? AND protocol = ?;
+`, clientIP, clientMAC, string(traffic.DirectionDownload), "tcp").Scan(&archivedClientBytes, &archivedClientPackets); err != nil {
+		t.Fatalf("query archived client: %v", err)
+	}
+	if archivedClientBytes != 1000 || archivedClientPackets != 1 {
+		t.Fatalf("expected old hourly client traffic to be archived, got bytes=%d packets=%d", archivedClientBytes, archivedClientPackets)
+	}
+}

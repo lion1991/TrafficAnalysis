@@ -305,6 +305,13 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	flushTicker := time.NewTicker(cfg.FlushInterval())
 	defer flushTicker.Stop()
 
+	retentionTicker := time.NewTicker(cfg.Retention.CompactInterval())
+	defer retentionTicker.Stop()
+	retentionPolicy := store.RetentionPolicy{
+		MinuteRetention: cfg.Retention.MinuteDuration(),
+		HourlyRetention: cfg.Retention.HourlyDuration(),
+	}
+
 	var liveTicker *time.Ticker
 	var liveC <-chan time.Time
 	if output.enabled {
@@ -344,6 +351,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			return err
 		case <-flushTicker.C:
 			if err := flushCompleteBuckets(ctx, st, aggregator, clientAggregator, cfg.BucketDuration()); err != nil {
+				return err
+			}
+		case now := <-retentionTicker.C:
+			if err := st.CompactAndPrune(ctx, now.UTC(), retentionPolicy); err != nil {
 				return err
 			}
 		case now := <-liveC:

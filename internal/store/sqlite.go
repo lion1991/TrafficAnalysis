@@ -25,6 +25,11 @@ type ClientBucketRow struct {
 	NameSource string
 }
 
+type RetentionPolicy struct {
+	MinuteRetention time.Duration
+	HourlyRetention time.Duration
+}
+
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -71,6 +76,22 @@ CREATE TABLE IF NOT EXISTS traffic_buckets (
 	PRIMARY KEY (bucket_start, direction, protocol)
 );
 CREATE INDEX IF NOT EXISTS idx_traffic_buckets_start ON traffic_buckets(bucket_start);
+CREATE TABLE IF NOT EXISTS traffic_hourly_buckets (
+	bucket_start INTEGER NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (bucket_start, direction, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_hourly_buckets_start ON traffic_hourly_buckets(bucket_start);
+CREATE TABLE IF NOT EXISTS traffic_archive_buckets (
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (direction, protocol)
+);
 CREATE TABLE IF NOT EXISTS client_buckets (
 	bucket_start INTEGER NOT NULL,
 	client_ip TEXT NOT NULL,
@@ -83,6 +104,27 @@ CREATE TABLE IF NOT EXISTS client_buckets (
 );
 CREATE INDEX IF NOT EXISTS idx_client_buckets_start ON client_buckets(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_client_buckets_client_ip ON client_buckets(client_ip, bucket_start);
+CREATE TABLE IF NOT EXISTS client_hourly_buckets (
+	bucket_start INTEGER NOT NULL,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (bucket_start, client_ip, client_mac, direction, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_client_hourly_buckets_start ON client_hourly_buckets(bucket_start);
+CREATE INDEX IF NOT EXISTS idx_client_hourly_buckets_client_ip ON client_hourly_buckets(client_ip, bucket_start);
+CREATE TABLE IF NOT EXISTS client_archive_buckets (
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (client_ip, client_mac, direction, protocol)
+);
 CREATE TABLE IF NOT EXISTS client_names (
 	client_ip TEXT NOT NULL,
 	client_mac TEXT NOT NULL,
@@ -325,11 +367,19 @@ LIMIT 1;
 
 func (s *SQLiteStore) QueryBuckets(ctx context.Context, from, to time.Time) ([]BucketRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
+WITH combined AS (
 SELECT bucket_start, direction, protocol, bytes, packets
 FROM traffic_buckets
 WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT bucket_start, direction, protocol, bytes, packets
+FROM traffic_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
+SELECT bucket_start, direction, protocol, bytes, packets
+FROM combined
 ORDER BY bucket_start ASC, direction ASC, protocol ASC;
-`, from.UTC().Unix(), to.UTC().Unix())
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +416,15 @@ ORDER BY bucket_start ASC, direction ASC, protocol ASC;
 
 func (s *SQLiteStore) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]ClientBucketRow, error) {
 	const queryAll = `
+WITH combined AS (
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
        COALESCE((
           SELECT alias
@@ -385,12 +444,20 @@ SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, 
           LIMIT 1
        ), ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
-FROM client_buckets cb
+FROM combined cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
-WHERE cb.bucket_start >= ? AND cb.bucket_start < ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 	const queryClient = `
+WITH combined AS (
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_buckets
+WHERE bucket_start >= ? AND bucket_start < ? AND client_ip = ?
+UNION ALL
+SELECT bucket_start, client_ip, client_mac, direction, protocol, bytes, packets
+FROM client_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ? AND client_ip = ?
+)
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
        COALESCE((
           SELECT alias
@@ -410,18 +477,17 @@ SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, 
           LIMIT 1
        ), ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
-FROM client_buckets cb
+FROM combined cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
-WHERE cb.bucket_start >= ? AND cb.bucket_start < ? AND cb.client_ip = ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 
 	var rows *sql.Rows
 	var err error
 	if clientIP == "" {
-		rows, err = s.db.QueryContext(ctx, queryAll, from.UTC().Unix(), to.UTC().Unix())
+		rows, err = s.db.QueryContext(ctx, queryAll, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix())
 	} else {
-		rows, err = s.db.QueryContext(ctx, queryClient, from.UTC().Unix(), to.UTC().Unix(), clientIP)
+		rows, err = s.db.QueryContext(ctx, queryClient, from.UTC().Unix(), to.UTC().Unix(), clientIP, from.UTC().Unix(), to.UTC().Unix(), clientIP)
 	}
 	if err != nil {
 		return nil, err
@@ -469,4 +535,97 @@ ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction 
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *SQLiteStore) CompactAndPrune(ctx context.Context, now time.Time, policy RetentionPolicy) error {
+	if policy.MinuteRetention <= 0 && policy.HourlyRetention <= 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if policy.MinuteRetention > 0 {
+		minuteCutoff := now.UTC().Add(-policy.MinuteRetention).Truncate(time.Hour).Unix()
+		if err := compactMinuteBuckets(ctx, tx, minuteCutoff); err != nil {
+			return err
+		}
+	}
+	if policy.HourlyRetention > 0 {
+		hourlyCutoff := now.UTC().Add(-policy.HourlyRetention).Truncate(time.Hour).Unix()
+		if err := archiveHourlyBuckets(ctx, tx, hourlyCutoff); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func compactMinuteBuckets(ctx context.Context, tx *sql.Tx, cutoffUnix int64) error {
+	statements := []string{
+		`
+INSERT INTO traffic_hourly_buckets (bucket_start, direction, protocol, bytes, packets)
+SELECT (bucket_start / 3600) * 3600, direction, protocol, SUM(bytes), SUM(packets)
+FROM traffic_buckets
+WHERE bucket_start < ?
+GROUP BY (bucket_start / 3600) * 3600, direction, protocol
+ON CONFLICT(bucket_start, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
+		`
+INSERT INTO client_hourly_buckets (bucket_start, client_ip, client_mac, direction, protocol, bytes, packets)
+SELECT (bucket_start / 3600) * 3600, client_ip, client_mac, direction, protocol, SUM(bytes), SUM(packets)
+FROM client_buckets
+WHERE bucket_start < ?
+GROUP BY (bucket_start / 3600) * 3600, client_ip, client_mac, direction, protocol
+ON CONFLICT(bucket_start, client_ip, client_mac, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
+		`DELETE FROM traffic_buckets WHERE bucket_start < ?;`,
+		`DELETE FROM client_buckets WHERE bucket_start < ?;`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement, cutoffUnix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func archiveHourlyBuckets(ctx context.Context, tx *sql.Tx, cutoffUnix int64) error {
+	statements := []string{
+		`
+INSERT INTO traffic_archive_buckets (direction, protocol, bytes, packets)
+SELECT direction, protocol, SUM(bytes), SUM(packets)
+FROM traffic_hourly_buckets
+WHERE bucket_start < ?
+GROUP BY direction, protocol
+ON CONFLICT(direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
+		`
+INSERT INTO client_archive_buckets (client_ip, client_mac, direction, protocol, bytes, packets)
+SELECT client_ip, client_mac, direction, protocol, SUM(bytes), SUM(packets)
+FROM client_hourly_buckets
+WHERE bucket_start < ?
+GROUP BY client_ip, client_mac, direction, protocol
+ON CONFLICT(client_ip, client_mac, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
+		`DELETE FROM traffic_hourly_buckets WHERE bucket_start < ?;`,
+		`DELETE FROM client_hourly_buckets WHERE bucket_start < ?;`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement, cutoffUnix); err != nil {
+			return err
+		}
+	}
+	return nil
 }

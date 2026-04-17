@@ -22,12 +22,19 @@ type Config struct {
 	LocalNetworks []string    `json:"local_networks"`
 	IgnoreLAN     bool        `json:"ignore_lan_traffic"`
 	WANIP         WANIPConfig `json:"wan_ip"`
+	Retention     Retention   `json:"retention"`
 }
 
 type WANIPConfig struct {
 	HTTPURL        string `json:"http_url"`
 	Static         string `json:"static"`
 	RefreshSeconds int    `json:"refresh_seconds"`
+}
+
+type Retention struct {
+	MinuteDays     int `json:"minute_days"`
+	HourlyDays     int `json:"hourly_days"`
+	CompactSeconds int `json:"compact_seconds"`
 }
 
 func Default() Config {
@@ -43,6 +50,11 @@ func Default() Config {
 		WANIP: WANIPConfig{
 			HTTPURL:        "https://api.ipify.org",
 			RefreshSeconds: 300,
+		},
+		Retention: Retention{
+			MinuteDays:     30,
+			HourlyDays:     365,
+			CompactSeconds: 3600,
 		},
 	}
 }
@@ -84,6 +96,15 @@ func (c *Config) applyDefaults() {
 	if c.WANIP.RefreshSeconds <= 0 {
 		c.WANIP.RefreshSeconds = defaults.WANIP.RefreshSeconds
 	}
+	if c.Retention.MinuteDays <= 0 {
+		c.Retention.MinuteDays = defaults.Retention.MinuteDays
+	}
+	if c.Retention.HourlyDays <= 0 {
+		c.Retention.HourlyDays = defaults.Retention.HourlyDays
+	}
+	if c.Retention.CompactSeconds <= 0 {
+		c.Retention.CompactSeconds = defaults.Retention.CompactSeconds
+	}
 }
 
 func (c Config) ValidateForCapture() error {
@@ -107,6 +128,18 @@ func (c Config) LiveInterval() time.Duration {
 
 func (c Config) WANIPRefreshInterval() time.Duration {
 	return time.Duration(c.WANIP.RefreshSeconds) * time.Second
+}
+
+func (r Retention) MinuteDuration() time.Duration {
+	return time.Duration(r.MinuteDays) * 24 * time.Hour
+}
+
+func (r Retention) HourlyDuration() time.Duration {
+	return time.Duration(r.HourlyDays) * 24 * time.Hour
+}
+
+func (r Retention) CompactInterval() time.Duration {
+	return time.Duration(r.CompactSeconds) * time.Second
 }
 
 func ParseLocalNetworks(networks []string) ([]netip.Prefix, error) {

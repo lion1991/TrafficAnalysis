@@ -69,6 +69,11 @@ Example:
     "192.168.248.0/21"
   ],
   "ignore_lan_traffic": true,
+  "retention": {
+    "minute_days": 30,
+    "hourly_days": 365,
+    "compact_seconds": 3600
+  },
   "wan_ip": {
     "http_url": "https://api.ipify.org",
     "static": "",
@@ -180,9 +185,15 @@ Explicit RFC3339 range also works:
 Data is stored as time buckets in SQLite:
 
 - `traffic_buckets`: WAN totals by bucket, direction, and protocol
+- `traffic_hourly_buckets`: WAN hourly totals compacted from older minute buckets
+- `traffic_archive_buckets`: all-time WAN totals archived from data older than the hourly retention window
 - `client_buckets`: LAN-client public traffic by bucket, client IP, client MAC, direction, and protocol
+- `client_hourly_buckets`: LAN-client hourly totals compacted from older minute buckets
+- `client_archive_buckets`: all-time LAN-client totals archived from data older than the hourly retention window
 - `client_names`: learned client names keyed by client IP and MAC
 - `client_aliases`: manual display names, keyed by MAC when available so aliases survive DHCP IP changes
+
+Retention defaults keep 1-minute buckets for 30 days, compact older data into hourly buckets for 365 days, then archive data older than 365 days into total summary tables. Archived data keeps total upload/download and packet counts, but no longer supports precise time-range queries.
 
 ## Web UI and HTTP API
 
