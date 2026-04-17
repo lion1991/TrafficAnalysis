@@ -206,3 +206,26 @@ func TestParseQueryRangeSupportsDayDurations(t *testing.T) {
 		t.Fatalf("unexpected from: %s", from)
 	}
 }
+
+func TestShouldTriggerWANRefreshForOtherPublicTraffic(t *testing.T) {
+	packet := traffic.Packet{
+		SrcIP: netip.MustParseAddr("42.103.52.50"),
+		DstIP: netip.MustParseAddr("124.222.87.165"),
+	}
+	if !shouldTriggerWANRefresh(packet, traffic.DirectionOther) {
+		t.Fatal("expected public other traffic to trigger WAN refresh")
+	}
+}
+
+func TestShouldNotTriggerWANRefreshForLANOrPrivateTraffic(t *testing.T) {
+	packet := traffic.Packet{
+		SrcIP: netip.MustParseAddr("192.168.252.1"),
+		DstIP: netip.MustParseAddr("239.255.255.250"),
+	}
+	if shouldTriggerWANRefresh(packet, traffic.DirectionLAN) {
+		t.Fatal("expected LAN traffic not to trigger WAN refresh")
+	}
+	if shouldTriggerWANRefresh(packet, traffic.DirectionOther) {
+		t.Fatal("expected private/multicast traffic not to trigger WAN refresh")
+	}
+}

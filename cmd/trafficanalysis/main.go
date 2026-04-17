@@ -197,7 +197,11 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- runner(ctx, func(packet traffic.Packet) {
+			manager.ObservePacket(packet.SrcIP, packet.DstIP)
 			direction := classifier.Classify(packet)
+			if shouldTriggerWANRefresh(packet, direction) {
+				manager.RequestRefresh()
+			}
 			meter.AddPacket(direction, packet)
 			if direction == traffic.DirectionLAN && cfg.IgnoreLAN {
 				return
@@ -537,6 +541,21 @@ func formatEndpoint(addr netip.Addr, port uint16) string {
 		return fmt.Sprintf("[%s]:%d", addr, port)
 	}
 	return fmt.Sprintf("%s:%d", addr, port)
+}
+
+func shouldTriggerWANRefresh(packet traffic.Packet, direction traffic.Direction) bool {
+	if direction != traffic.DirectionOther {
+		return false
+	}
+	return isPublicAddress(packet.SrcIP) || isPublicAddress(packet.DstIP)
+}
+
+func isPublicAddress(addr netip.Addr) bool {
+	return addr.IsValid() &&
+		addr.IsGlobalUnicast() &&
+		!addr.IsPrivate() &&
+		!addr.IsLoopback() &&
+		!addr.IsLinkLocalUnicast()
 }
 
 func rateBytes(bytes int64, interval time.Duration) int64 {
