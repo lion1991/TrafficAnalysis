@@ -424,3 +424,34 @@ func TestClientsPageIntegratesLiveRatesIntoSummaryTable(t *testing.T) {
 		}
 	}
 }
+
+func TestClientsPageUsesStableDefaultSortAndSortableHeaders(t *testing.T) {
+	html, err := embeddedStatic.ReadFile("static/clients.html")
+	if err != nil {
+		t.Fatalf("read clients.html: %v", err)
+	}
+	js, err := embeddedStatic.ReadFile("static/clients.js")
+	if err != nil {
+		t.Fatalf("read clients.js: %v", err)
+	}
+	css, err := embeddedStatic.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+
+	for _, want := range []string{`data-sort="display_name"`, `data-sort="upload_bytes"`, `data-sort="download_bps"`} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("expected clients page to contain sortable header %q", want)
+		}
+	}
+	for _, want := range []string{"sortState = { field: \"display_name\", direction: \"asc\" }", "function setSort", "function compareClientRows"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected clients script to contain %q", want)
+		}
+	}
+	for _, want := range []string{".bytesCol", ".rateCol", "font-variant-numeric: tabular-nums", "table-layout: fixed"} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("expected CSS to stabilize traffic columns with %q", want)
+		}
+	}
+}

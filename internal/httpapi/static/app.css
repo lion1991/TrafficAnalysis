@@ -292,6 +292,7 @@ canvas {
 
 table {
   width: 100%;
+  table-layout: auto;
   margin-top: 12px;
   border-collapse: collapse;
 }
@@ -310,12 +311,87 @@ th {
   text-transform: uppercase;
 }
 
+.clientsTable {
+  min-width: 1460px;
+  table-layout: fixed;
+}
+
+.clientsTable .nameCol {
+  width: 210px;
+}
+
+.clientsTable .sourceCol {
+  width: 82px;
+}
+
+.clientsTable .ipCol {
+  width: 142px;
+}
+
+.clientsTable .macCol {
+  width: 150px;
+}
+
+.clientsTable .rateCol,
+.clientsTable .bytesCol {
+  width: 124px;
+}
+
+.clientsTable .packetCol {
+  width: 86px;
+}
+
+.clientsTable .aliasCol {
+  width: 300px;
+}
+
+.sortButton {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+
+.sortButton:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.sortButton::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  color: var(--ink);
+}
+
+.sortButton[data-direction="asc"]::after {
+  content: "↑";
+}
+
+.sortButton[data-direction="desc"]::after {
+  content: "↓";
+}
+
 .nameCell {
   font-weight: 800;
 }
 
 .rateCell {
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.clientsTable td:nth-child(7),
+.clientsTable td:nth-child(8),
+.clientsTable td:nth-child(9),
+.clientsTable td:nth-child(10) {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .aliasEditor {

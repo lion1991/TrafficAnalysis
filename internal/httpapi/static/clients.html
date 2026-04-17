@@ -80,20 +80,20 @@
           <p><span id="rangeText">-</span>；实时速率每秒更新</p>
         </div>
         <div class="tableWrap wideTable">
-          <table>
+          <table class="clientsTable">
             <thead>
               <tr>
-                <th>名称</th>
-                <th>来源</th>
-                <th>客户端 IP</th>
-                <th>MAC</th>
-                <th>实时上传</th>
-                <th>实时下载</th>
-                <th>上传</th>
-                <th>下载</th>
-                <th>总计</th>
-                <th>包</th>
-                <th>别名</th>
+                <th class="nameCol"><button class="sortButton" type="button" data-sort="display_name">名称</button></th>
+                <th class="sourceCol"><button class="sortButton" type="button" data-sort="name_source">来源</button></th>
+                <th class="ipCol"><button class="sortButton" type="button" data-sort="client_ip">客户端 IP</button></th>
+                <th class="macCol">MAC</th>
+                <th class="rateCol"><button class="sortButton" type="button" data-sort="upload_bps">实时上传</button></th>
+                <th class="rateCol"><button class="sortButton" type="button" data-sort="download_bps">实时下载</button></th>
+                <th class="bytesCol"><button class="sortButton" type="button" data-sort="upload_bytes">上传</button></th>
+                <th class="bytesCol"><button class="sortButton" type="button" data-sort="download_bytes">下载</button></th>
+                <th class="bytesCol"><button class="sortButton" type="button" data-sort="total_bytes">总计</button></th>
+                <th class="packetCol"><button class="sortButton" type="button" data-sort="packets">包</button></th>
+                <th class="aliasCol">别名</th>
               </tr>
             </thead>
             <tbody id="clientsBody">

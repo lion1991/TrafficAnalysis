@@ -19,6 +19,7 @@ let refreshTimer = null;
 let eventSource = null;
 const clientsByKey = new Map();
 const liveKeys = new Set();
+let sortState = { field: "display_name", direction: "asc" };
 
 function formatBytes(bytes) {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -168,19 +169,7 @@ function mergeLiveClients(clients) {
 }
 
 function renderClientRows() {
-  const rows = Array.from(clientsByKey.values()).sort((left, right) => {
-    const leftLive = Number(left.upload_bps || 0) + Number(left.download_bps || 0);
-    const rightLive = Number(right.upload_bps || 0) + Number(right.download_bps || 0);
-    if (leftLive !== rightLive) {
-      return rightLive - leftLive;
-    }
-    const leftTotal = Number(left.upload_bytes || 0) + Number(left.download_bytes || 0);
-    const rightTotal = Number(right.upload_bytes || 0) + Number(right.download_bytes || 0);
-    if (leftTotal !== rightTotal) {
-      return rightTotal - leftTotal;
-    }
-    return String(left.display_name || left.client_ip).localeCompare(String(right.display_name || right.client_ip));
-  });
+  const rows = Array.from(clientsByKey.values()).sort(compareClientRows);
 
   const historicalRows = rows.filter((row) => !row.live_only);
   const totals = historicalRows.reduce(
@@ -205,6 +194,65 @@ function renderClientRows() {
 
   elements.clientsBody.innerHTML = rows.map(renderClientRow).join("");
   bindAliasButtons();
+  renderSortHeaders();
+}
+
+function compareClientRows(left, right) {
+  const result = compareSortValues(sortValue(left, sortState.field), sortValue(right, sortState.field));
+  if (result !== 0) {
+    return sortState.direction === "asc" ? result : -result;
+  }
+  return compareSortValues(sortValue(left, "display_name"), sortValue(right, "display_name"));
+}
+
+function sortValue(row, field) {
+  switch (field) {
+    case "display_name":
+      return row.display_name || row.client_ip || row.client_mac || "";
+    case "name_source":
+      return row.alias ? "alias" : row.name_source || "";
+    case "client_ip":
+      return row.client_ip || "";
+    case "upload_bps":
+      return Number(row.upload_bps || 0);
+    case "download_bps":
+      return Number(row.download_bps || 0);
+    case "upload_bytes":
+      return Number(row.upload_bytes || 0);
+    case "download_bytes":
+      return Number(row.download_bytes || 0);
+    case "total_bytes":
+      return Number(row.upload_bytes || 0) + Number(row.download_bytes || 0);
+    case "packets":
+      return Number(row.packets || 0);
+    default:
+      return "";
+  }
+}
+
+function compareSortValues(left, right) {
+  if (typeof left === "number" || typeof right === "number") {
+    return Number(left || 0) - Number(right || 0);
+  }
+  return String(left || "").localeCompare(String(right || ""), "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+}
+
+function setSort(field) {
+  if (sortState.field === field) {
+    sortState = { field, direction: sortState.direction === "asc" ? "desc" : "asc" };
+  } else {
+    const numericFields = new Set(["upload_bps", "download_bps", "upload_bytes", "download_bytes", "total_bytes", "packets"]);
+    sortState = { field, direction: numericFields.has(field) ? "desc" : "asc" };
+  }
+  renderClientRows();
+}
+
+function renderSortHeaders() {
+  for (const button of document.querySelectorAll("[data-sort]")) {
+    const active = button.dataset.sort === sortState.field;
+    button.setAttribute("aria-sort", active ? (sortState.direction === "asc" ? "ascending" : "descending") : "none");
+    button.dataset.direction = active ? sortState.direction : "";
+  }
 }
 
 function renderClientRow(row) {
@@ -341,6 +389,9 @@ function startLiveStream() {
 }
 
 elements.queryButton.addEventListener("click", loadClients);
+for (const button of document.querySelectorAll("[data-sort]")) {
+  button.addEventListener("click", () => setSort(button.dataset.sort));
+}
 elements.preset.addEventListener("change", () => {
   syncControls();
   loadClients();
@@ -354,5 +405,6 @@ elements.clientIP.addEventListener("keydown", (event) => {
 
 elements.date.value = todayText();
 syncControls();
+renderSortHeaders();
 startLiveStream();
 loadClients();
