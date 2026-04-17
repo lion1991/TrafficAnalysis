@@ -19,6 +19,7 @@ type BucketRow struct {
 type ClientBucketRow struct {
 	Key        traffic.ClientBucketKey
 	Value      traffic.BucketValue
+	Alias      string
 	Name       string
 	NameSource string
 }
@@ -91,6 +92,14 @@ CREATE TABLE IF NOT EXISTS client_names (
 	PRIMARY KEY (client_ip, client_mac)
 );
 CREATE INDEX IF NOT EXISTS idx_client_names_mac ON client_names(client_mac);
+CREATE TABLE IF NOT EXISTS client_aliases (
+	client_key TEXT NOT NULL PRIMARY KEY,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	alias TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_client_aliases_mac ON client_aliases(client_mac);
 `)
 	return err
 }
@@ -226,6 +235,38 @@ ON CONFLICT(client_ip, client_mac) DO UPDATE SET
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
+	if clientIP == "" && clientMAC == "" {
+		return nil
+	}
+	clientKey := clientAliasKey(clientIP, clientMAC)
+	if alias == "" {
+		_, err := s.db.ExecContext(ctx, `
+DELETE FROM client_aliases
+WHERE client_key = ?;
+`, clientKey)
+		return err
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO client_aliases (client_key, client_ip, client_mac, alias, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(client_key) DO UPDATE SET
+	client_ip = excluded.client_ip,
+	client_mac = excluded.client_mac,
+	alias = excluded.alias,
+	updated_at = excluded.updated_at;
+`, clientKey, clientIP, clientMAC, alias, time.Now().UTC().Unix())
+	return err
+}
+
+func clientAliasKey(clientIP, clientMAC string) string {
+	if clientMAC != "" {
+		return clientMAC
+	}
+	return clientIP
+}
+
 func (s *SQLiteStore) QueryBuckets(ctx context.Context, from, to time.Time) ([]BucketRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT bucket_start, direction, protocol, bytes, packets
@@ -270,17 +311,21 @@ ORDER BY bucket_start ASC, direction ASC, protocol ASC;
 func (s *SQLiteStore) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]ClientBucketRow, error) {
 	const queryAll = `
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
+       COALESCE(ca.alias, ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
 FROM client_buckets cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
+LEFT JOIN client_aliases ca ON ca.client_key = CASE WHEN cb.client_mac != '' THEN cb.client_mac ELSE cb.client_ip END
 WHERE cb.bucket_start >= ? AND cb.bucket_start < ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
 	const queryClient = `
 SELECT cb.bucket_start, cb.client_ip, cb.client_mac, cb.direction, cb.protocol, cb.bytes, cb.packets,
+       COALESCE(ca.alias, ''),
        COALESCE(cn.name, ''), COALESCE(cn.source, '')
 FROM client_buckets cb
 LEFT JOIN client_names cn ON cn.client_ip = cb.client_ip AND cn.client_mac = cb.client_mac
+LEFT JOIN client_aliases ca ON ca.client_key = CASE WHEN cb.client_mac != '' THEN cb.client_mac ELSE cb.client_ip END
 WHERE cb.bucket_start >= ? AND cb.bucket_start < ? AND cb.client_ip = ?
 ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction ASC, cb.protocol ASC;
 `
@@ -306,9 +351,10 @@ ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction 
 		var protocol string
 		var bytes int64
 		var packets int64
+		var alias string
 		var name string
 		var nameSource string
-		if err := rows.Scan(&startUnix, &clientIPText, &clientMAC, &direction, &protocol, &bytes, &packets, &name, &nameSource); err != nil {
+		if err := rows.Scan(&startUnix, &clientIPText, &clientMAC, &direction, &protocol, &bytes, &packets, &alias, &name, &nameSource); err != nil {
 			return nil, err
 		}
 
@@ -328,6 +374,7 @@ ORDER BY cb.bucket_start ASC, cb.client_ip ASC, cb.client_mac ASC, cb.direction 
 				Bytes:   bytes,
 				Packets: packets,
 			},
+			Alias:      alias,
 			Name:       name,
 			NameSource: nameSource,
 		})

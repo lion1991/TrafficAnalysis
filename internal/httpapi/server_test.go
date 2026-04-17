@@ -19,6 +19,9 @@ type fakeBucketQueryer struct {
 	from       time.Time
 	to         time.Time
 	clientIP   string
+	aliasIP    string
+	aliasMAC   string
+	aliasName  string
 	rows       []store.BucketRow
 	clientRows []store.ClientBucketRow
 }
@@ -34,6 +37,13 @@ func (f *fakeBucketQueryer) QueryClientBuckets(ctx context.Context, from, to tim
 	f.to = to
 	f.clientIP = clientIP
 	return f.clientRows, nil
+}
+
+func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
+	f.aliasIP = clientIP
+	f.aliasMAC = clientMAC
+	f.aliasName = alias
+	return nil
 }
 
 func TestTrafficAPIReturnsTotalsSeriesAndBreakdown(t *testing.T) {
@@ -165,6 +175,7 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 					Protocol:  "tcp",
 				},
 				Value:      traffic.BucketValue{Bytes: 1200, Packets: 3},
+				Alias:      "书房 NAS",
 				Name:       "nas-box",
 				NameSource: "dhcp",
 			},
@@ -177,6 +188,7 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 					Protocol:  "udp",
 				},
 				Value:      traffic.BucketValue{Bytes: 3400, Packets: 4},
+				Alias:      "书房 NAS",
 				Name:       "nas-box",
 				NameSource: "dhcp",
 			},
@@ -223,11 +235,32 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 	if body.Clients[1].ClientIP != "192.168.248.22" || body.Clients[1].UploadBytes != 1200 || body.Clients[1].DownloadBytes != 3400 {
 		t.Fatalf("unexpected second client: %#v", body.Clients[1])
 	}
-	if body.Clients[1].DisplayName != "nas-box" || body.Clients[1].NameSource != "dhcp" {
-		t.Fatalf("expected client display name from dhcp, got %#v", body.Clients[1])
+	if body.Clients[1].DisplayName != "书房 NAS" || body.Clients[1].NameSource != "alias" || body.Clients[1].LearnedName != "nas-box" {
+		t.Fatalf("expected client display name from alias, got %#v", body.Clients[1])
 	}
 	if len(body.Breakdown) != 3 {
 		t.Fatalf("expected 3 breakdown rows, got %d: %#v", len(body.Breakdown), body.Breakdown)
+	}
+}
+
+func TestClientAliasAPIStoresAlias(t *testing.T) {
+	queryer := &fakeBucketQueryer{}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/clients/alias", strings.NewReader(`{
+		"client_ip": "192.168.248.22",
+		"client_mac": "00:11:22:33:44:55",
+		"alias": "书房 NAS"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.aliasIP != "192.168.248.22" || queryer.aliasMAC != "00:11:22:33:44:55" || queryer.aliasName != "书房 NAS" {
+		t.Fatalf("unexpected alias write: ip=%q mac=%q alias=%q", queryer.aliasIP, queryer.aliasMAC, queryer.aliasName)
 	}
 }
 
@@ -364,5 +397,30 @@ func TestClientsPageIsServed(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "客户端流量") {
 		t.Fatalf("expected clients page, got %q", rec.Body.String())
+	}
+}
+
+func TestClientsPageIntegratesLiveRatesIntoSummaryTable(t *testing.T) {
+	html, err := embeddedStatic.ReadFile("static/clients.html")
+	if err != nil {
+		t.Fatalf("read clients.html: %v", err)
+	}
+	js, err := embeddedStatic.ReadFile("static/clients.js")
+	if err != nil {
+		t.Fatalf("read clients.js: %v", err)
+	}
+
+	if strings.Contains(string(html), "liveClientsBody") {
+		t.Fatal("expected clients page to avoid a separate realtime clients table")
+	}
+	for _, want := range []string{"实时上传", "实时下载", "别名"} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("expected clients page to contain %q", want)
+		}
+	}
+	for _, want := range []string{"mergeLiveClients", "saveAlias", "/api/clients/alias"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected clients script to contain %q", want)
+		}
 	}
 }

@@ -199,3 +199,64 @@ func TestSQLiteStoreStoresClientNamesAndReturnsThemWithClientBuckets(t *testing.
 		t.Fatalf("expected client name from dhcp, got name=%q source=%q", rows[0].Name, rows[0].NameSource)
 	}
 }
+
+func TestSQLiteStoreClientAliasOverridesLearnedName(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	clientMAC := "00:11:22:33:44:55"
+
+	err = store.UpsertClientNames(ctx, []traffic.NameObservation{
+		{Timestamp: start, IP: clientIP, MAC: clientMAC, Name: "nas-box", Source: "dhcp"},
+	})
+	if err != nil {
+		t.Fatalf("upsert client name: %v", err)
+	}
+	err = store.UpsertClientAlias(ctx, clientIP.String(), clientMAC, "书房 NAS")
+	if err != nil {
+		t.Fatalf("upsert client alias: %v", err)
+	}
+	err = store.UpsertClientBuckets(ctx, map[traffic.ClientBucketKey]traffic.BucketValue{
+		{
+			Start:     start,
+			ClientIP:  clientIP,
+			ClientMAC: clientMAC,
+			Direction: traffic.DirectionDownload,
+			Protocol:  "tcp",
+		}: {Bytes: 2048, Packets: 2},
+	})
+	if err != nil {
+		t.Fatalf("upsert client bucket: %v", err)
+	}
+
+	rows, err := store.QueryClientBuckets(ctx, start.Add(-time.Minute), start.Add(time.Minute), "")
+	if err != nil {
+		t.Fatalf("query client buckets: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one row, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].Alias != "书房 NAS" || rows[0].Name != "nas-box" {
+		t.Fatalf("expected alias and learned name, got alias=%q name=%q", rows[0].Alias, rows[0].Name)
+	}
+
+	err = store.UpsertClientAlias(ctx, clientIP.String(), clientMAC, "")
+	if err != nil {
+		t.Fatalf("clear client alias: %v", err)
+	}
+	rows, err = store.QueryClientBuckets(ctx, start.Add(-time.Minute), start.Add(time.Minute), "")
+	if err != nil {
+		t.Fatalf("query client buckets after clear: %v", err)
+	}
+	if rows[0].Alias != "" {
+		t.Fatalf("expected alias to clear, got %q", rows[0].Alias)
+	}
+}

@@ -310,6 +310,30 @@ th {
   text-transform: uppercase;
 }
 
+.nameCell {
+  font-weight: 800;
+}
+
+.rateCell {
+  font-weight: 800;
+}
+
+.aliasEditor {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto;
+  gap: 8px;
+  min-width: 260px;
+}
+
+.aliasEditor input,
+.aliasEditor button {
+  height: 36px;
+}
+
+.aliasEditor button {
+  padding: 0 12px;
+}
+
 .notes p {
   margin: 14px 0 0;
   color: var(--muted);

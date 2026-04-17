@@ -28,6 +28,10 @@ type ClientBucketQueryer interface {
 	QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]store.ClientBucketRow, error)
 }
 
+type ClientAliasWriter interface {
+	UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error
+}
+
 type Options struct {
 	Location   *time.Location
 	Now        func() time.Time
@@ -37,6 +41,7 @@ type Options struct {
 type server struct {
 	queryer       BucketQueryer
 	clientQueryer ClientBucketQueryer
+	aliasWriter   ClientAliasWriter
 	location      *time.Location
 	now           func() time.Time
 	liveSource    LiveSource
@@ -55,6 +60,7 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	srv := server{
 		queryer:       queryer,
 		clientQueryer: clientBucketQueryer(queryer),
+		aliasWriter:   clientAliasWriter(queryer),
 		location:      location,
 		now:           now,
 		liveSource:    options.LiveSource,
@@ -63,9 +69,18 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/traffic", srv.handleTraffic)
 	mux.HandleFunc("/api/clients", srv.handleClients)
+	mux.HandleFunc("/api/clients/alias", srv.handleClientAlias)
 	mux.HandleFunc("/api/live", srv.handleLive)
 	mux.Handle("/", srv.staticHandler())
 	return mux
+}
+
+func clientAliasWriter(queryer BucketQueryer) ClientAliasWriter {
+	aliasWriter, ok := queryer.(ClientAliasWriter)
+	if !ok {
+		return nil
+	}
+	return aliasWriter
 }
 
 func clientBucketQueryer(queryer BucketQueryer) ClientBucketQueryer {
@@ -182,6 +197,40 @@ func (s server) handleClients(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s server) handleClientAlias(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.aliasWriter == nil {
+		http.Error(w, "client aliases are unavailable", http.StatusNotImplemented)
+		return
+	}
+
+	var request struct {
+		ClientIP  string `json:"client_ip"`
+		ClientMAC string `json:"client_mac"`
+		Alias     string `json:"alias"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	request.ClientIP = strings.TrimSpace(request.ClientIP)
+	request.ClientMAC = strings.TrimSpace(request.ClientMAC)
+	request.Alias = strings.TrimSpace(request.Alias)
+	if request.ClientIP == "" && request.ClientMAC == "" {
+		http.Error(w, "client_ip or client_mac is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.aliasWriter.UpsertClientAlias(r.Context(), request.ClientIP, request.ClientMAC, request.Alias); err != nil {
+		http.Error(w, "store client alias", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s server) staticHandler() http.Handler {
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
@@ -245,6 +294,8 @@ type clientsResponse struct {
 type clientSummaryRow struct {
 	DisplayName   string `json:"display_name"`
 	NameSource    string `json:"name_source"`
+	Alias         string `json:"alias"`
+	LearnedName   string `json:"learned_name"`
 	ClientIP      string `json:"client_ip"`
 	ClientMAC     string `json:"client_mac"`
 	UploadBytes   int64  `json:"upload_bytes"`
@@ -341,9 +392,12 @@ func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clie
 		clientKey := clientIP + "\x00" + row.Key.ClientMAC
 		summary := summaryByClient[clientKey]
 		if summary == nil {
+			displayName, source := displayClientName(row.Alias, row.Name, row.NameSource, clientIP, row.Key.ClientMAC)
 			summary = &clientSummaryRow{
-				DisplayName: displayClientName(row.Name, clientIP, row.Key.ClientMAC),
-				NameSource:  row.NameSource,
+				DisplayName: displayName,
+				NameSource:  source,
+				Alias:       row.Alias,
+				LearnedName: row.Name,
 				ClientIP:    clientIP,
 				ClientMAC:   row.Key.ClientMAC,
 			}
@@ -405,15 +459,19 @@ func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clie
 	return response
 }
 
-func displayClientName(name, clientIP, clientMAC string) string {
-	name = strings.TrimSpace(name)
-	if name != "" {
-		return name
+func displayClientName(alias, learnedName, learnedSource, clientIP, clientMAC string) (string, string) {
+	alias = strings.TrimSpace(alias)
+	if alias != "" {
+		return alias, "alias"
+	}
+	learnedName = strings.TrimSpace(learnedName)
+	if learnedName != "" {
+		return learnedName, learnedSource
 	}
 	if clientMAC != "" {
-		return clientMAC
+		return clientMAC, ""
 	}
-	return clientIP
+	return clientIP, ""
 }
 
 func addDirectionBytes(totals *responseTotals, direction traffic.Direction, bytes int64) {

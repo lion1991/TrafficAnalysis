@@ -127,7 +127,7 @@ Set `local_networks` to your LAN CIDRs. Packets matching those CIDRs are shown a
 
 Client traffic is written from `lan_interface` into `client_buckets`. It uses the LAN-side IP and the Ethernet MAC from the local side of the packet, so DHCP address changes can still be correlated by MAC in the Web UI/API.
 
-Client names are written into `client_names` when the analyzer sees DHCP hostname, mDNS, or LLMNR name packets. Not every device exposes a name, so unknown devices fall back to MAC or IP display.
+Client names are written into `client_names` when the analyzer sees DHCP hostname, mDNS, or LLMNR name packets. Not every device exposes a name, so unknown devices fall back to MAC or IP display. Manual aliases are stored in `client_aliases` and take precedence over learned names.
 
 Import a pcap file for offline testing:
 
@@ -182,6 +182,7 @@ Data is stored as time buckets in SQLite:
 - `traffic_buckets`: WAN totals by bucket, direction, and protocol
 - `client_buckets`: LAN-client public traffic by bucket, client IP, client MAC, direction, and protocol
 - `client_names`: learned client names keyed by client IP and MAC
+- `client_aliases`: manual display names, keyed by MAC when available so aliases survive DHCP IP changes
 
 ## Web UI and HTTP API
 
@@ -216,6 +217,7 @@ GET /api/traffic?month=2026-04
 GET /api/traffic?from=2026-04-17%2000:00&to=2026-04-18%2000:00
 GET /api/clients?last=24h
 GET /api/clients?date=2026-04-17&client_ip=192.168.248.22
+PUT /api/clients/alias
 ```
 
 Response contains:
@@ -230,6 +232,14 @@ Response contains:
 - `range`: UTC query range
 - `clients`: per-client upload/download totals sorted by total traffic, including `display_name` and `name_source` when known
 - `breakdown`: per-client totals by direction and protocol
+
+`PUT /api/clients/alias` stores or clears a manual display name:
+
+```json
+{"client_ip":"192.168.248.22","client_mac":"00:11:22:33:44:55","alias":"书房 NAS"}
+```
+
+Use an empty `alias` to clear the manual name.
 
 The standalone `serve` command is suitable for historical queries against recently flushed SQLite bucket data.
 The upload/download summary cards are backed by `/api/traffic`, so they reflect data already flushed into SQLite. With the default `bucket_seconds: 60` and `flush_seconds: 10`, the current in-progress minute is not included until the bucket completes and the next flush runs.
@@ -251,7 +261,7 @@ data: {"timestamp":"2026-04-17T12:00:00Z","wan_ip":"203.0.113.10","wan_available
 The Web UI connects to `/api/live` as soon as the page loads. If the page is served by the standalone `serve` command, live capture memory is unavailable and the UI falls back to polling `/api/traffic`.
 The live upload/download row is backed by `/api/live` and updates once per second from capture memory when the page is served by `capture -web-addr`.
 
-The client page at `/clients.html` has a full client table, client IP filtering, specified-date summaries, and a real-time client table driven by `/api/live`. The real-time client table is available only when the Web UI is served by `capture -web-addr`, because it uses in-memory per-second counters.
+The client page at `/clients.html` has a full client table, client IP filtering, specified-date summaries, manual aliases, and real-time upload/download columns driven by `/api/live`. Historical totals decide the stable client rows; live SSE only updates the per-second rate columns, so devices do not disappear just because they are idle. Live rates are available only when the Web UI is served by `capture -web-addr`, because they use in-memory counters.
 
 ## systemd Service
 

@@ -74,34 +74,10 @@
         </article>
       </section>
 
-      <section class="chartPanel" aria-label="实时客户端流量">
-        <div class="chartTitle">
-          <h2>实时客户端</h2>
-          <p>每秒更新，来自 LAN 镜像口内存计数</p>
-        </div>
-        <div class="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>客户端 IP</th>
-                <th>MAC</th>
-                <th>上传速率</th>
-                <th>下载速率</th>
-                <th>包</th>
-              </tr>
-            </thead>
-            <tbody id="liveClientsBody">
-              <tr><td colspan="6">等待实时数据</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="chartPanel" aria-label="客户端流量汇总">
         <div class="chartTitle">
           <h2>客户端汇总</h2>
-          <p id="rangeText">-</p>
+          <p><span id="rangeText">-</span>；实时速率每秒更新</p>
         </div>
         <div class="tableWrap wideTable">
           <table>
@@ -111,14 +87,17 @@
                 <th>来源</th>
                 <th>客户端 IP</th>
                 <th>MAC</th>
+                <th>实时上传</th>
+                <th>实时下载</th>
                 <th>上传</th>
                 <th>下载</th>
                 <th>总计</th>
                 <th>包</th>
+                <th>别名</th>
               </tr>
             </thead>
             <tbody id="clientsBody">
-              <tr><td colspan="8">暂无数据</td></tr>
+              <tr><td colspan="11">暂无数据</td></tr>
             </tbody>
           </table>
         </div>
