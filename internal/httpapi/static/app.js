@@ -269,6 +269,11 @@ function startPolling(intervalMs) {
   refreshTimer = setInterval(loadTraffic, intervalMs);
 }
 
+function cleanupPage() {
+  stopPolling();
+  stopLiveStream();
+}
+
 elements.queryButton.addEventListener("click", loadTraffic);
 elements.preset.addEventListener("change", () => {
   syncControls();
@@ -280,6 +285,8 @@ window.addEventListener("resize", () => {
     renderChart(lastData.series || []);
   }
 });
+window.addEventListener("pagehide", cleanupPage);
+window.addEventListener("beforeunload", cleanupPage);
 
 syncControls();
 startLiveStream();

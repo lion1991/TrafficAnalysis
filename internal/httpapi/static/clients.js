@@ -394,6 +394,13 @@ function stopPolling() {
   }
 }
 
+function stopLiveStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+}
+
 function startPolling(intervalMs) {
   if (refreshTimer) {
     clearInterval(refreshTimer);
@@ -412,9 +419,7 @@ function startLiveStream() {
   if (!window.EventSource) {
     return;
   }
-  if (eventSource) {
-    eventSource.close();
-  }
+  stopLiveStream();
   eventSource = new EventSource("/api/live");
   eventSource.addEventListener("snapshot", (event) => {
     try {
@@ -426,6 +431,11 @@ function startLiveStream() {
   eventSource.onerror = () => {
     mergeLiveClients([]);
   };
+}
+
+function cleanupPage() {
+  stopPolling();
+  stopLiveStream();
 }
 
 elements.queryButton.addEventListener("click", loadClients);
@@ -442,9 +452,10 @@ elements.clientIP.addEventListener("keydown", (event) => {
     loadClients();
   }
 });
+window.addEventListener("pagehide", cleanupPage);
+window.addEventListener("beforeunload", cleanupPage);
 
 elements.date.value = todayText();
 syncControls();
 renderSortHeaders();
-startLiveStream();
-loadClients();
+loadClients().finally(startLiveStream);

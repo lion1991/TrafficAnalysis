@@ -481,3 +481,17 @@ func TestClientsPageDoesNotReplaceLearnedNameWithLiveFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
+	for _, path := range []string{"static/app.js", "static/clients.js"} {
+		js, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, want := range []string{"function cleanupPage", `window.addEventListener("pagehide", cleanupPage)`, `window.addEventListener("beforeunload", cleanupPage)`} {
+			if !strings.Contains(string(js), want) {
+				t.Fatalf("expected %s to close live streams during navigation with %q", path, want)
+			}
+		}
+	}
+}
