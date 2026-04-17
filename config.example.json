@@ -1,0 +1,15 @@
+{
+  "interface": "eth1",
+  "database": "traffic.db",
+  "bpf": "ip or ip6",
+  "snapshot_len": 262144,
+  "promiscuous": true,
+  "bucket_seconds": 60,
+  "flush_seconds": 10,
+  "wan_ip": {
+    "http_url": "https://api.ipify.org",
+    "static": "",
+    "refresh_seconds": 300
+  }
+}
+

@@ -1,0 +1,13 @@
+.DS_Store
+
+# Go build/test output
+/bin/
+/dist/
+*.test
+coverage.out
+
+# Local runtime files
+traffic.db
+traffic.db-*
+config.json
+

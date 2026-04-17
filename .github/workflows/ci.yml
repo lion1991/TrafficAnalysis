@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test-and-build:
+    name: Test and build Linux binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libpcap-dev pkg-config
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Linux amd64 binary
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/trafficanalysis-linux-amd64 ./cmd/trafficanalysis
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trafficanalysis-linux-amd64
+          path: dist/trafficanalysis-linux-amd64
+          if-no-files-found: error
+
