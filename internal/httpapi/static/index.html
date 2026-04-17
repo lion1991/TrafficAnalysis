@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrafficAnalysis</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">WAN Traffic Console</p>
+          <h1>TrafficAnalysis</h1>
+        </div>
+        <div class="status" id="status">等待查询</div>
+      </section>
+
+      <section class="controls" aria-label="查询条件">
+        <label>
+          时间范围
+          <select id="preset">
+            <option value="1h">最近 1 小时</option>
+            <option value="6h">最近 6 小时</option>
+            <option value="24h">最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+            <option value="custom">自定义范围</option>
+          </select>
+        </label>
+        <label>
+          开始
+          <input id="from" type="text" placeholder="2026-04-17 00:00" />
+        </label>
+        <label>
+          结束
+          <input id="to" type="text" placeholder="2026-04-18 00:00" />
+        </label>
+        <label class="checkbox">
+          <input id="autoRefresh" type="checkbox" />
+          自动刷新
+        </label>
+        <button id="queryButton" type="button">查询</button>
+      </section>
+
+      <section class="metrics" aria-label="汇总">
+        <article class="metric upload">
+          <span>上传</span>
+          <strong id="uploadTotal">0 B</strong>
+        </article>
+        <article class="metric download">
+          <span>下载</span>
+          <strong id="downloadTotal">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>LAN</span>
+          <strong id="lanTotal">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>其它/未知</span>
+          <strong id="otherTotal">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>包数量</span>
+          <strong id="packetTotal">0</strong>
+        </article>
+      </section>
+
+      <section class="chartPanel" aria-label="流量趋势">
+        <div class="chartTitle">
+          <h2>流量趋势</h2>
+          <p id="rangeText">-</p>
+        </div>
+        <canvas id="trafficChart" width="1200" height="360"></canvas>
+      </section>
+
+      <section class="grid">
+        <article>
+          <h2>协议分布</h2>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>方向</th>
+                  <th>协议</th>
+                  <th>流量</th>
+                  <th>包</th>
+                </tr>
+              </thead>
+              <tbody id="breakdownBody">
+                <tr><td colspan="4">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="notes">
+          <h2>查询说明</h2>
+          <p>自定义时间支持 <code>2026-04-17 00:00</code>、<code>2026-04-17</code> 和 RFC3339。</p>
+          <p>当前页面读取 SQLite 中已经落库的 bucket 数据。自动刷新适合查看最近范围的变化。</p>
+        </article>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

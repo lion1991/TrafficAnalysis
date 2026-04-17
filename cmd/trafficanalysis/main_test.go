@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +229,44 @@ func TestShouldNotTriggerWANRefreshForLANOrPrivateTraffic(t *testing.T) {
 	}
 	if shouldTriggerWANRefresh(packet, traffic.DirectionOther) {
 		t.Fatal("expected private/multicast traffic not to trigger WAN refresh")
+	}
+}
+
+func TestResolveServeConfigUsesConfigDatabaseAndOverrides(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("TZ", "UTC")
+
+	err := os.WriteFile(configPath, []byte(`{
+  "database": "from-config.db"
+}`), 0644)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := resolveServeConfig(serveConfigOptions{
+		configPath: configPath,
+		addr:       ":9090",
+		dbPath:     "override.db",
+	})
+	if err != nil {
+		t.Fatalf("resolve serve config: %v", err)
+	}
+
+	if resolved.addr != ":9090" {
+		t.Fatalf("unexpected addr: %s", resolved.addr)
+	}
+	if resolved.dbPath != "override.db" {
+		t.Fatalf("unexpected db path: %s", resolved.dbPath)
+	}
+
+	resolved, err = resolveServeConfig(serveConfigOptions{
+		configPath: configPath,
+		addr:       ":9090",
+	})
+	if err != nil {
+		t.Fatalf("resolve serve config: %v", err)
+	}
+	if resolved.dbPath != "from-config.db" {
+		t.Fatalf("expected config database, got %s", resolved.dbPath)
 	}
 }

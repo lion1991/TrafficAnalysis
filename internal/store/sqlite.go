@@ -26,6 +26,10 @@ func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 	}
 
 	store := &SQLiteStore{db: db}
+	if err := store.configure(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := store.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -35,6 +39,15 @@ func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+func (s *SQLiteStore) configure(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+PRAGMA busy_timeout = 5000;
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+`)
+	return err
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {

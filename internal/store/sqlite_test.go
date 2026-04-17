@@ -54,3 +54,30 @@ func TestSQLiteStoreUpsertsAndQueriesBuckets(t *testing.T) {
 		t.Fatalf("unexpected aggregate: %#v", rows[0].Value)
 	}
 }
+
+func TestSQLiteStoreEnablesConcurrentReadFriendlyPragmas(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	var journalMode string
+	if err := store.db.QueryRowContext(ctx, "PRAGMA journal_mode;").Scan(&journalMode); err != nil {
+		t.Fatalf("query journal mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("expected WAL journal mode, got %q", journalMode)
+	}
+
+	var busyTimeout int
+	if err := store.db.QueryRowContext(ctx, "PRAGMA busy_timeout;").Scan(&busyTimeout); err != nil {
+		t.Fatalf("query busy timeout: %v", err)
+	}
+	if busyTimeout < 5000 {
+		t.Fatalf("expected busy timeout >= 5000ms, got %d", busyTimeout)
+	}
+}

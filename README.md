@@ -148,3 +148,42 @@ Explicit RFC3339 range also works:
 ```
 
 Data is stored as time buckets in SQLite. The first version stores totals by bucket, direction, and protocol.
+
+## Web UI and HTTP API
+
+Start the built-in Web UI:
+
+```bash
+./trafficanalysis serve -config config.json -addr :8080
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080
+```
+
+The Web UI is embedded into the Go binary, so it does not require a separate Node.js frontend server. It reads the same SQLite database used by capture and query commands. You can override the database path:
+
+```bash
+./trafficanalysis serve -config config.json -db traffic.db -addr :8080
+```
+
+HTTP API:
+
+```text
+GET /api/traffic?last=1h
+GET /api/traffic?last=7d
+GET /api/traffic?date=2026-04-17
+GET /api/traffic?month=2026-04
+GET /api/traffic?from=2026-04-17%2000:00&to=2026-04-18%2000:00
+```
+
+Response contains:
+
+- `range`: UTC query range
+- `totals`: upload/download/lan/other/unknown bytes and packet total
+- `series`: bucketed upload/download/lan/other/unknown values for charting
+- `breakdown`: totals by direction and protocol
+
+The Web UI can auto-refresh by polling the API. This is suitable for watching recently flushed SQLite bucket data. It is not a true live stream from the capture process memory; for sub-second live display, add a capture-side SSE or WebSocket endpoint.

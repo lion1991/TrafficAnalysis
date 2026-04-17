@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 
 	"trafficanalysis/internal/capture"
 	"trafficanalysis/internal/config"
+	"trafficanalysis/internal/httpapi"
 	"trafficanalysis/internal/store"
 	"trafficanalysis/internal/traffic"
 	"trafficanalysis/internal/wanip"
@@ -43,6 +45,8 @@ func run(args []string) error {
 		return runReadPCAP(args[1:])
 	case "query":
 		return runQuery(args[1:])
+	case "serve":
+		return runServe(args[1:])
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command %q", args[0])
@@ -307,6 +311,96 @@ func runQuery(args []string) error {
 
 	printRows(rows)
 	return nil
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	configPath := fs.String("config", "config.json", "config file path")
+	dbPath := fs.String("db", "", "sqlite database path override")
+	addr := fs.String("addr", ":8080", "HTTP listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resolved, err := resolveServeConfig(serveConfigOptions{
+		configPath: *configPath,
+		dbPath:     *dbPath,
+		addr:       *addr,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	st, err := store.OpenSQLite(ctx, resolved.dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	server := &http.Server{
+		Addr:    resolved.addr,
+		Handler: httpapi.NewHandler(st, httpapi.Options{}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+
+	fmt.Printf("web UI listening on http://%s\n", displayListenAddr(resolved.addr))
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return nil
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+type serveConfigOptions struct {
+	configPath string
+	dbPath     string
+	addr       string
+}
+
+type resolvedServeConfig struct {
+	dbPath string
+	addr   string
+}
+
+func resolveServeConfig(options serveConfigOptions) (resolvedServeConfig, error) {
+	cfg, err := config.Load(options.configPath)
+	if err != nil {
+		return resolvedServeConfig{}, err
+	}
+
+	dbPath := options.dbPath
+	if dbPath == "" {
+		dbPath = cfg.Database
+	}
+	addr := options.addr
+	if addr == "" {
+		addr = ":8080"
+	}
+	return resolvedServeConfig{dbPath: dbPath, addr: addr}, nil
+}
+
+func displayListenAddr(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
 }
 
 type queryRangeOptions struct {
@@ -576,6 +670,7 @@ func printUsage() {
 		"trafficanalysis query -db traffic.db -date 2026-04-17",
 		"trafficanalysis query -db traffic.db -month 2026-04",
 		"trafficanalysis query -db traffic.db -from \"2026-04-17 00:00\" -to \"2026-04-18 00:00\"",
+		"trafficanalysis serve -config config.json -addr :8080",
 	}
 	fmt.Println(strings.Join(commands, "\n"))
 }
