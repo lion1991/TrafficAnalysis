@@ -6,6 +6,7 @@ const elements = {
   clientIP: document.querySelector("#clientIP"),
   autoRefresh: document.querySelector("#autoRefresh"),
   queryButton: document.querySelector("#queryButton"),
+  resetButton: document.querySelector("#resetButton"),
   status: document.querySelector("#status"),
   uploadTotal: document.querySelector("#uploadTotal"),
   downloadTotal: document.querySelector("#downloadTotal"),
@@ -19,7 +20,52 @@ let refreshTimer = null;
 let eventSource = null;
 const clientsByKey = new Map();
 const liveKeys = new Set();
-let sortState = { field: "display_name", direction: "asc" };
+let sortState = { field: "total_bytes", direction: "desc" };
+
+const CLIENTS_PREFS_KEY = "ta_clients_prefs";
+
+function loadSavedPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem(CLIENTS_PREFS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(
+      CLIENTS_PREFS_KEY,
+      JSON.stringify({
+        preset: elements.preset.value,
+        date: elements.date.value,
+        from: elements.from.value,
+        to: elements.to.value,
+        clientIP: elements.clientIP.value,
+        autoRefresh: elements.autoRefresh.checked,
+        sortField: sortState.field,
+        sortDirection: sortState.direction,
+      }),
+    );
+  } catch {}
+}
+
+function resetPrefs() {
+  try {
+    localStorage.removeItem(CLIENTS_PREFS_KEY);
+  } catch {}
+  elements.preset.value = "1h";
+  elements.date.value = todayText();
+  elements.from.value = "";
+  elements.to.value = "";
+  elements.clientIP.value = "";
+  elements.autoRefresh.checked = false;
+  sortState = { field: "total_bytes", direction: "desc" };
+  syncControls();
+  stopPolling();
+  renderSortHeaders();
+  loadClients();
+}
 
 function formatUTC8(isoStr) {
   const date = new Date(isoStr);
@@ -295,6 +341,7 @@ function setSort(field) {
     const numericFields = new Set(["upload_bps", "download_bps", "upload_bytes", "download_bytes", "total_bytes", "packets"]);
     sortState = { field, direction: numericFields.has(field) ? "desc" : "asc" };
   }
+  savePrefs();
   renderClientRows();
 }
 
@@ -449,24 +496,43 @@ function cleanupPage() {
   stopLiveStream();
 }
 
-elements.queryButton.addEventListener("click", loadClients);
+elements.queryButton.addEventListener("click", () => { savePrefs(); loadClients(); });
 for (const button of document.querySelectorAll("[data-sort]")) {
   button.addEventListener("click", () => setSort(button.dataset.sort));
 }
 elements.preset.addEventListener("change", () => {
   syncControls();
+  savePrefs();
   loadClients();
 });
-elements.autoRefresh.addEventListener("change", updateAutoRefresh);
+elements.autoRefresh.addEventListener("change", () => { savePrefs(); updateAutoRefresh(); });
+elements.resetButton.addEventListener("click", resetPrefs);
 elements.clientIP.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
+    savePrefs();
     loadClients();
   }
 });
 window.addEventListener("pagehide", cleanupPage);
 window.addEventListener("beforeunload", cleanupPage);
 
-elements.date.value = todayText();
+// 恢复已保存的偏好设置
+const savedPrefs = loadSavedPrefs();
+if (savedPrefs.preset) { elements.preset.value = savedPrefs.preset; }
+if (savedPrefs.date) { elements.date.value = savedPrefs.date; }
+else { elements.date.value = todayText(); }
+if (savedPrefs.from) { elements.from.value = savedPrefs.from; }
+if (savedPrefs.to) { elements.to.value = savedPrefs.to; }
+if (savedPrefs.clientIP) { elements.clientIP.value = savedPrefs.clientIP; }
+if (savedPrefs.autoRefresh) { elements.autoRefresh.checked = true; }
+if (savedPrefs.sortField) {
+  sortState = { field: savedPrefs.sortField, direction: savedPrefs.sortDirection || "desc" };
+}
 syncControls();
 renderSortHeaders();
-loadClients().finally(startLiveStream);
+loadClients().finally(() => {
+  startLiveStream();
+  if (elements.autoRefresh.checked) {
+    updateAutoRefresh();
+  }
+});

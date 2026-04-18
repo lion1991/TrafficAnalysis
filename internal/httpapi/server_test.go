@@ -444,7 +444,7 @@ func TestClientsPageUsesStableDefaultSortAndSortableHeaders(t *testing.T) {
 			t.Fatalf("expected clients page to contain sortable header %q", want)
 		}
 	}
-	for _, want := range []string{"sortState = { field: \"display_name\", direction: \"asc\" }", "function setSort", "function compareClientRows"} {
+	for _, want := range []string{"sortState = { field: \"total_bytes\", direction: \"desc\" }", "function setSort", "function compareClientRows"} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("expected clients script to contain %q", want)
 		}

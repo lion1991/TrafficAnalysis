@@ -4,6 +4,7 @@ const elements = {
   to: document.querySelector("#to"),
   autoRefresh: document.querySelector("#autoRefresh"),
   queryButton: document.querySelector("#queryButton"),
+  resetButton: document.querySelector("#resetButton"),
   status: document.querySelector("#status"),
   uploadTotal: document.querySelector("#uploadTotal"),
   downloadTotal: document.querySelector("#downloadTotal"),
@@ -22,6 +23,45 @@ const elements = {
 let refreshTimer = null;
 let eventSource = null;
 let lastData = null;
+
+const OVERVIEW_PREFS_KEY = "ta_overview_prefs";
+
+function loadSavedPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem(OVERVIEW_PREFS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(
+      OVERVIEW_PREFS_KEY,
+      JSON.stringify({
+        preset: elements.preset.value,
+        from: elements.from.value,
+        to: elements.to.value,
+        autoRefresh: elements.autoRefresh.checked,
+      }),
+    );
+  } catch {}
+}
+
+function resetPrefs() {
+  try {
+    localStorage.removeItem(OVERVIEW_PREFS_KEY);
+  } catch {}
+  elements.preset.value = "1h";
+  elements.from.value = "";
+  elements.to.value = "";
+  elements.autoRefresh.checked = false;
+  syncControls();
+  stopPolling();
+  stopLiveStream();
+  startLiveStream();
+  loadTraffic();
+}
 
 function formatUTC8(isoStr) {
   const date = new Date(isoStr);
@@ -287,12 +327,14 @@ function cleanupPage() {
   stopLiveStream();
 }
 
-elements.queryButton.addEventListener("click", loadTraffic);
+elements.queryButton.addEventListener("click", () => { savePrefs(); loadTraffic(); });
 elements.preset.addEventListener("change", () => {
   syncControls();
+  savePrefs();
   loadTraffic();
 });
-elements.autoRefresh.addEventListener("change", updateAutoRefresh);
+elements.autoRefresh.addEventListener("change", () => { savePrefs(); updateAutoRefresh(); });
+elements.resetButton.addEventListener("click", resetPrefs);
 window.addEventListener("resize", () => {
   if (lastData) {
     renderChart(lastData.series || []);
@@ -301,6 +343,15 @@ window.addEventListener("resize", () => {
 window.addEventListener("pagehide", cleanupPage);
 window.addEventListener("beforeunload", cleanupPage);
 
+// 恢复已保存的偏好设置
+const savedPrefs = loadSavedPrefs();
+if (savedPrefs.preset) { elements.preset.value = savedPrefs.preset; }
+if (savedPrefs.from) { elements.from.value = savedPrefs.from; }
+if (savedPrefs.to) { elements.to.value = savedPrefs.to; }
+if (savedPrefs.autoRefresh) { elements.autoRefresh.checked = true; }
 syncControls();
 startLiveStream();
 loadTraffic();
+if (elements.autoRefresh.checked) {
+  updateAutoRefresh();
+}
