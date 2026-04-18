@@ -1,5 +1,6 @@
 const elements = {
   preset: document.querySelector("#preset"),
+  date: document.querySelector("#date"),
   fromDate: document.querySelector("#fromDate"),
   toDate: document.querySelector("#toDate"),
   from: document.querySelector("#from"),
@@ -45,6 +46,7 @@ function savePrefs() {
       OVERVIEW_PREFS_KEY,
       JSON.stringify({
         preset: elements.preset.value,
+        date: elements.date.value,
         fromDate: elements.fromDate.value,
         toDate: elements.toDate.value,
         from: elements.from.value,
@@ -60,6 +62,7 @@ function resetPrefs() {
     localStorage.removeItem(OVERVIEW_PREFS_KEY);
   } catch {}
   elements.preset.value = "1h";
+  elements.date.value = todayText();
   elements.fromDate.value = "";
   elements.toDate.value = "";
   elements.from.value = "";
@@ -99,6 +102,10 @@ function formatBytes(bytes) {
   return `${value.toFixed(2)} ${unit}`;
 }
 
+function todayText() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function buildURL() {
   return `/api/traffic?${buildRangeParams().toString()}`;
 }
@@ -130,7 +137,9 @@ function addDays(dateStr, days) {
 function buildRangeParams() {
   const params = new URLSearchParams();
   const mode = elements.preset.value;
-  if (mode === "daterange") {
+  if (mode === "date") {
+    params.set("date", elements.date.value || todayText());
+  } else if (mode === "daterange") {
     if (elements.fromDate.value) {
       params.set("from", elements.fromDate.value + " 00:00");
     }
@@ -299,13 +308,16 @@ function escapeHTML(value) {
 
 function syncControls() {
   const mode = elements.preset.value;
+  const isDate = mode === "date";
   const isDaterange = mode === "daterange";
   const isCustom = mode === "custom";
+  elements.date.disabled = !isDate;
   elements.fromDate.disabled = !isDaterange;
   elements.toDate.disabled = !isDaterange;
   elements.from.disabled = !isCustom;
   elements.to.disabled = !isCustom;
   // 隐藏不需要的输入组，减少视觉干扰
+  elements.date.closest("label").hidden = !isDate;
   elements.fromDate.closest("label").hidden = !isDaterange;
   elements.toDate.closest("label").hidden = !isDaterange;
   elements.from.closest("label").hidden = !isCustom;
@@ -455,6 +467,8 @@ window.addEventListener("beforeunload", cleanupPage);
 // 恢复已保存的偏好设置
 const savedPrefs = loadSavedPrefs();
 if (savedPrefs.preset) { elements.preset.value = savedPrefs.preset; }
+if (savedPrefs.date) { elements.date.value = savedPrefs.date; }
+else { elements.date.value = todayText(); }
 if (savedPrefs.fromDate) { elements.fromDate.value = savedPrefs.fromDate; }
 if (savedPrefs.toDate) { elements.toDate.value = savedPrefs.toDate; }
 if (savedPrefs.from) { elements.from.value = normalizeDatetimeLocalPref(savedPrefs.from); }

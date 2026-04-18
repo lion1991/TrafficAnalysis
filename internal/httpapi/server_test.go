@@ -562,6 +562,28 @@ func TestWebPagesUseSharedControlSizing(t *testing.T) {
 	}
 }
 
+func TestOverviewPageSupportsSpecifiedDateRange(t *testing.T) {
+	html, err := embeddedStatic.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	for _, want := range []string{`<option value="date">指定日期</option>`, `<input id="date" type="date" />`} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("expected overview page to contain specified-date control %q", want)
+		}
+	}
+
+	js, err := embeddedStatic.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	for _, want := range []string{`date: document.querySelector("#date")`, `params.set("date", elements.date.value || todayText());`, `elements.date.closest("label").hidden = !isDate`} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected overview script to support specified-date range with %q", want)
+		}
+	}
+}
+
 func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
 	for _, path := range []string{"static/app.js", "static/clients.js"} {
 		js, err := embeddedStatic.ReadFile(path)
