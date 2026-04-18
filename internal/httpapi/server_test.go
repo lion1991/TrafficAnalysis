@@ -528,6 +528,16 @@ func TestWebPagesMigrateSavedDatetimePrefs(t *testing.T) {
 	}
 }
 
+func TestWebCSSHonorsHiddenControls(t *testing.T) {
+	css, err := embeddedStatic.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	if !strings.Contains(string(css), "[hidden]") || !strings.Contains(string(css), "display: none !important;") {
+		t.Fatal("expected CSS to hide inactive range controls even when label display styles are applied")
+	}
+}
+
 func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
 	for _, path := range []string{"static/app.js", "static/clients.js"} {
 		js, err := embeddedStatic.ReadFile(path)
