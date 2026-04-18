@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -364,6 +365,19 @@ func TestLiveSSEStreamsPublishedSnapshots(t *testing.T) {
 	}
 }
 
+func TestLiveSSESendsHeartbeatEvents(t *testing.T) {
+	data, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+
+	for _, want := range []string{"liveHeartbeatInterval", "time.NewTicker(liveHeartbeatInterval)", `"event: heartbeat\ndata: {}\n\n"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("expected live SSE handler to keep connections warm with %q", want)
+		}
+	}
+}
+
 func TestLiveSSEReturnsUnavailableWithoutLiveSource(t *testing.T) {
 	handler := NewHandler(&fakeBucketQueryer{}, Options{Location: time.UTC})
 
@@ -491,6 +505,20 @@ func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
 		for _, want := range []string{"function cleanupPage", `window.addEventListener("pagehide", cleanupPage)`, `window.addEventListener("beforeunload", cleanupPage)`} {
 			if !strings.Contains(string(js), want) {
 				t.Fatalf("expected %s to close live streams during navigation with %q", path, want)
+			}
+		}
+	}
+}
+
+func TestWebPagesReconnectLiveStreamsAfterErrors(t *testing.T) {
+	for _, path := range []string{"static/app.js", "static/clients.js"} {
+		js, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, want := range []string{"const LIVE_RECONNECT_DELAY_MS", "const LIVE_STALE_TIMEOUT_MS", "let liveReconnectTimer", "let liveWatchdogTimer", "function markLiveMessage", "function startLiveWatchdog", "setTimeout(startLiveStream, LIVE_RECONNECT_DELAY_MS)", "scheduleLiveReconnect();"} {
+			if !strings.Contains(string(js), want) {
+				t.Fatalf("expected %s to reconnect live streams after SSE errors with %q", path, want)
 			}
 		}
 	}

@@ -20,6 +20,8 @@ import (
 //go:embed static/*
 var embeddedStatic embed.FS
 
+const liveHeartbeatInterval = 15 * time.Second
+
 type BucketQueryer interface {
 	QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error)
 }
@@ -146,10 +148,18 @@ func (s server) handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	heartbeat := time.NewTicker(liveHeartbeatInterval)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case snapshot, ok := <-events:
 			if !ok {
 				return

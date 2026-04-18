@@ -23,6 +23,9 @@ const liveKeys = new Set();
 let sortState = { field: "total_bytes", direction: "desc" };
 
 const CLIENTS_PREFS_KEY = "ta_clients_prefs";
+const LIVE_RECONNECT_DELAY_MS = 3000;
+const LIVE_STALE_TIMEOUT_MS = 45000;
+const LIVE_WATCHDOG_INTERVAL_MS = 5000;
 
 function loadSavedPrefs() {
   try {
@@ -452,7 +455,54 @@ function stopPolling() {
   }
 }
 
+let liveReconnectTimer = null;
+let liveWatchdogTimer = null;
+let lastLiveMessageAt = 0;
+
+function markLiveMessage() {
+  lastLiveMessageAt = Date.now();
+}
+
+function clearLiveReconnect() {
+  if (liveReconnectTimer) {
+    clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
+  }
+}
+
+function scheduleLiveReconnect() {
+  if (liveReconnectTimer) {
+    return;
+  }
+  liveReconnectTimer = setTimeout(startLiveStream, LIVE_RECONNECT_DELAY_MS);
+}
+
+function clearLiveWatchdog() {
+  if (liveWatchdogTimer) {
+    clearInterval(liveWatchdogTimer);
+    liveWatchdogTimer = null;
+  }
+}
+
+function startLiveWatchdog() {
+  clearLiveWatchdog();
+  liveWatchdogTimer = setInterval(() => {
+    if (!eventSource || Date.now() - lastLiveMessageAt < LIVE_STALE_TIMEOUT_MS) {
+      return;
+    }
+    const source = eventSource;
+    source.close();
+    if (eventSource === source) {
+      eventSource = null;
+    }
+    mergeLiveClients([]);
+    scheduleLiveReconnect();
+  }, LIVE_WATCHDOG_INTERVAL_MS);
+}
+
 function stopLiveStream() {
+  clearLiveReconnect();
+  clearLiveWatchdog();
   if (eventSource) {
     eventSource.close();
     eventSource = null;
@@ -477,17 +527,30 @@ function startLiveStream() {
   if (!window.EventSource) {
     return;
   }
+  clearLiveReconnect();
   stopLiveStream();
-  eventSource = new EventSource("/api/live");
-  eventSource.addEventListener("snapshot", (event) => {
+  const source = new EventSource("/api/live");
+  eventSource = source;
+  markLiveMessage();
+  startLiveWatchdog();
+  source.addEventListener("snapshot", (event) => {
     try {
+      markLiveMessage();
       mergeLiveClients(JSON.parse(event.data).clients || []);
     } catch (error) {
       console.error(error);
     }
   });
-  eventSource.onerror = () => {
+  source.addEventListener("heartbeat", markLiveMessage);
+  source.onerror = () => {
+    if (eventSource !== source) {
+      return;
+    }
+    source.close();
+    eventSource = null;
+    clearLiveWatchdog();
     mergeLiveClients([]);
+    scheduleLiveReconnect();
   };
 }
 

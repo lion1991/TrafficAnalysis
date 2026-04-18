@@ -25,6 +25,9 @@ let eventSource = null;
 let lastData = null;
 
 const OVERVIEW_PREFS_KEY = "ta_overview_prefs";
+const LIVE_RECONNECT_DELAY_MS = 3000;
+const LIVE_STALE_TIMEOUT_MS = 45000;
+const LIVE_WATCHDOG_INTERVAL_MS = 5000;
 
 function loadSavedPrefs() {
   try {
@@ -265,6 +268,52 @@ function updateAutoRefresh() {
   }
 }
 
+let liveReconnectTimer = null;
+let liveWatchdogTimer = null;
+let lastLiveMessageAt = 0;
+
+function markLiveMessage() {
+  lastLiveMessageAt = Date.now();
+}
+
+function clearLiveReconnect() {
+  if (liveReconnectTimer) {
+    clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
+  }
+}
+
+function scheduleLiveReconnect() {
+  if (liveReconnectTimer) {
+    return;
+  }
+  liveReconnectTimer = setTimeout(startLiveStream, LIVE_RECONNECT_DELAY_MS);
+}
+
+function clearLiveWatchdog() {
+  if (liveWatchdogTimer) {
+    clearInterval(liveWatchdogTimer);
+    liveWatchdogTimer = null;
+  }
+}
+
+function startLiveWatchdog() {
+  clearLiveWatchdog();
+  liveWatchdogTimer = setInterval(() => {
+    if (!eventSource || Date.now() - lastLiveMessageAt < LIVE_STALE_TIMEOUT_MS) {
+      return;
+    }
+    const source = eventSource;
+    source.close();
+    if (eventSource === source) {
+      eventSource = null;
+    }
+    elements.status.textContent = "实时重连";
+    elements.status.style.background = "var(--accent)";
+    scheduleLiveReconnect();
+  }, LIVE_WATCHDOG_INTERVAL_MS);
+}
+
 function stopPolling() {
   if (refreshTimer) {
     clearInterval(refreshTimer);
@@ -273,6 +322,8 @@ function stopPolling() {
 }
 
 function stopLiveStream() {
+  clearLiveReconnect();
+  clearLiveWatchdog();
   if (eventSource) {
     eventSource.close();
     eventSource = null;
@@ -280,6 +331,7 @@ function stopLiveStream() {
 }
 
 function startLiveStream() {
+  clearLiveReconnect();
   stopLiveStream();
   if (!window.EventSource) {
     elements.status.textContent = "轮询刷新";
@@ -290,24 +342,30 @@ function startLiveStream() {
 
   const source = new EventSource("/api/live");
   eventSource = source;
+  markLiveMessage();
+  startLiveWatchdog();
   source.addEventListener("snapshot", (event) => {
     try {
+      markLiveMessage();
       renderLive(JSON.parse(event.data));
     } catch (error) {
       console.error(error);
     }
   });
+  source.addEventListener("heartbeat", markLiveMessage);
   source.onerror = () => {
     if (eventSource !== source) {
       return;
     }
     source.close();
     eventSource = null;
+    clearLiveWatchdog();
     elements.status.textContent = "轮询刷新";
     elements.status.style.background = "var(--accent)";
     if (!refreshTimer) {
       startPolling(5000);
     }
+    scheduleLiveReconnect();
   };
 
   if (!refreshTimer) {
