@@ -107,16 +107,13 @@ h2 {
   text-align: center;
 }
 
-.controls {
-  display: grid;
-  grid-template-columns: 1.1fr 1.2fr 1.2fr auto auto auto;
+.controls,
+.clientsControls {
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 18px 0;
-  align-items: end;
-}
-
-.clientsControls {
-  grid-template-columns: 1fr 1fr 1.1fr 1.1fr 1.1fr auto auto auto;
+  align-items: flex-end;
 }
 
 label {
@@ -173,8 +170,9 @@ button {
 }
 
 .controlAction {
-  width: var(--control-action-width);
-  padding: 0 12px;
+  flex-shrink: 0;
+  width: auto;
+  padding: 0 20px;
 }
 
 button:hover {
@@ -454,20 +452,22 @@ code {
 }
 
 @media (max-width: 980px) {
-  .controls,
-  .clientsControls,
+  .controls > label:not(.checkbox),
+  .clientsControls > label:not(.checkbox) {
+    flex: 1 1 calc(50% - 6px);
+    max-width: calc(50% - 6px);
+  }
+
+  .checkbox,
+  .controlAction {
+    flex: 1 1 calc(50% - 6px);
+  }
+
   .metrics,
   .clientsMetrics,
   .livePanel,
   .grid {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .checkbox,
-  button,
-  .controlPreset,
-  .controlAction {
-    width: 100%;
   }
 
   /* 平板：隐藏次要列，缩减表格宽度 */
@@ -507,8 +507,14 @@ code {
     font-size: 34px;
   }
 
-  .controls,
-  .clientsControls,
+  .controls > label,
+  .clientsControls > label,
+  .controls > .controlAction,
+  .clientsControls > .controlAction {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+
   .metrics,
   .clientsMetrics,
   .livePanel,
