@@ -538,6 +538,30 @@ func TestWebCSSHonorsHiddenControls(t *testing.T) {
 	}
 }
 
+func TestWebPagesUseSharedControlSizing(t *testing.T) {
+	css, err := embeddedStatic.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	for _, want := range []string{"--control-preset-width", "--control-action-width", ".controlPreset", ".controlAction"} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("expected shared control sizing CSS to contain %q", want)
+		}
+	}
+
+	for _, path := range []string{"static/index.html", "static/clients.html"} {
+		html, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, want := range []string{`class="controlPreset"`, `class="controlAction"`, `class="controlAction btnReset"`} {
+			if !strings.Contains(string(html), want) {
+				t.Fatalf("expected %s to use shared control sizing class %q", path, want)
+			}
+		}
+	}
+}
+
 func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
 	for _, path := range []string{"static/app.js", "static/clients.js"} {
 		js, err := embeddedStatic.ReadFile(path)

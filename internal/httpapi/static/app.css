@@ -9,6 +9,8 @@
   --warn: #c43d32;
   --accent: #d8b11f;
   --shadow: 0 16px 38px rgba(20, 29, 24, 0.12);
+  --control-preset-width: 156px;
+  --control-action-width: 78px;
 }
 
 * {
@@ -125,6 +127,10 @@ label {
   font-weight: 700;
 }
 
+.controlPreset {
+  width: var(--control-preset-width);
+}
+
 input,
 select {
   width: 100%;
@@ -164,6 +170,11 @@ button {
   color: #fff;
   font-weight: 800;
   cursor: pointer;
+}
+
+.controlAction {
+  width: var(--control-action-width);
+  padding: 0 12px;
 }
 
 button:hover {
@@ -453,7 +464,9 @@ code {
   }
 
   .checkbox,
-  button {
+  button,
+  .controlPreset,
+  .controlAction {
     width: 100%;
   }
 
