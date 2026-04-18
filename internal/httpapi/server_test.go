@@ -496,6 +496,38 @@ func TestClientsPageDoesNotReplaceLearnedNameWithLiveFallback(t *testing.T) {
 	}
 }
 
+func TestWebPagesUseTimezoneSafeDateRangeHelpers(t *testing.T) {
+	for _, path := range []string{"static/app.js", "static/clients.js"} {
+		js, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(js)
+		for _, want := range []string{"Date.UTC(year, month - 1, day)", "date.setUTCDate(date.getUTCDate() + days)", "return formatDateInputValue(date);"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("expected %s to add date-range days without local timezone drift using %q", path, want)
+			}
+		}
+		if strings.Contains(text, "return d.toISOString().slice(0, 10);") {
+			t.Fatalf("expected %s not to convert date-range day arithmetic through UTC ISO strings", path)
+		}
+	}
+}
+
+func TestWebPagesMigrateSavedDatetimePrefs(t *testing.T) {
+	for _, path := range []string{"static/app.js", "static/clients.js"} {
+		js, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, want := range []string{"function normalizeDatetimeLocalPref", `.replace(" ", "T")`, "normalizeDatetimeLocalPref(savedPrefs.from)", "normalizeDatetimeLocalPref(savedPrefs.to)"} {
+			if !strings.Contains(string(js), want) {
+				t.Fatalf("expected %s to migrate saved datetime-local preferences with %q", path, want)
+			}
+		}
+	}
+}
+
 func TestWebPagesCloseLiveStreamsWhenNavigatingAway(t *testing.T) {
 	for _, path := range []string{"static/app.js", "static/clients.js"} {
 		js, err := embeddedStatic.ReadFile(path)

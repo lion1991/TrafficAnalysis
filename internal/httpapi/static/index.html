@@ -28,16 +28,25 @@
             <option value="6h">最近 6 小时</option>
             <option value="24h">最近 24 小时</option>
             <option value="7d">最近 7 天</option>
+            <option value="daterange">日期范围</option>
             <option value="custom">自定义范围</option>
           </select>
         </label>
         <label>
-          开始
-          <input id="from" type="text" placeholder="2026-04-17 00:00" />
+          开始日期
+          <input id="fromDate" type="date" />
         </label>
         <label>
-          结束
-          <input id="to" type="text" placeholder="2026-04-18 00:00" />
+          结束日期
+          <input id="toDate" type="date" />
+        </label>
+        <label>
+          开始时间
+          <input id="from" type="datetime-local" />
+        </label>
+        <label>
+          结束时间
+          <input id="to" type="datetime-local" />
         </label>
         <label class="checkbox">
           <input id="autoRefresh" type="checkbox" />

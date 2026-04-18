@@ -1,5 +1,7 @@
 const elements = {
   preset: document.querySelector("#preset"),
+  fromDate: document.querySelector("#fromDate"),
+  toDate: document.querySelector("#toDate"),
   from: document.querySelector("#from"),
   to: document.querySelector("#to"),
   autoRefresh: document.querySelector("#autoRefresh"),
@@ -43,6 +45,8 @@ function savePrefs() {
       OVERVIEW_PREFS_KEY,
       JSON.stringify({
         preset: elements.preset.value,
+        fromDate: elements.fromDate.value,
+        toDate: elements.toDate.value,
         from: elements.from.value,
         to: elements.to.value,
         autoRefresh: elements.autoRefresh.checked,
@@ -56,6 +60,8 @@ function resetPrefs() {
     localStorage.removeItem(OVERVIEW_PREFS_KEY);
   } catch {}
   elements.preset.value = "1h";
+  elements.fromDate.value = "";
+  elements.toDate.value = "";
   elements.from.value = "";
   elements.to.value = "";
   elements.autoRefresh.checked = false;
@@ -97,17 +103,50 @@ function buildURL() {
   return `/api/traffic?${buildRangeParams().toString()}`;
 }
 
+function datetimeLocalToApi(value) {
+  // datetime-local 的格式是 YYYY-MM-DDTHH:MM，后端期望 YYYY-MM-DD HH:MM
+  return value.trim().replace("T", " ");
+}
+
+function normalizeDatetimeLocalPref(value) {
+  return String(value || "").trim().replace(" ", "T");
+}
+
+function formatDateInputValue(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// 日期加 N 天（用于计算包含整个结束日的开区间结束点）
+function addDays(dateStr, days) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatDateInputValue(date);
+}
+
 function buildRangeParams() {
   const params = new URLSearchParams();
-  if (elements.preset.value === "custom") {
+  const mode = elements.preset.value;
+  if (mode === "daterange") {
+    if (elements.fromDate.value) {
+      params.set("from", elements.fromDate.value + " 00:00");
+    }
+    if (elements.toDate.value) {
+      // 包含结束日整天：发送次日 00:00 作为开区间结束点
+      params.set("to", addDays(elements.toDate.value, 1) + " 00:00");
+    }
+  } else if (mode === "custom") {
     if (elements.from.value.trim()) {
-      params.set("from", elements.from.value.trim());
+      params.set("from", datetimeLocalToApi(elements.from.value));
     }
     if (elements.to.value.trim()) {
-      params.set("to", elements.to.value.trim());
+      params.set("to", datetimeLocalToApi(elements.to.value));
     }
   } else {
-    params.set("last", elements.preset.value);
+    params.set("last", mode);
   }
   return params;
 }
@@ -211,7 +250,7 @@ function renderChart(series) {
 
   drawLine(ctx, series, "upload_bytes", "#0f8b5f", padding, width, height, maxValue);
   drawLine(ctx, series, "download_bytes", "#1264a3", padding, width, height, maxValue);
-  drawLegend(ctx, padding.left, padding.top);
+  drawLegend(ctx, padding.left + width, padding.top);
 }
 
 function drawLine(ctx, series, field, color, padding, width, height, maxValue) {
@@ -232,17 +271,20 @@ function drawLine(ctx, series, field, color, padding, width, height, maxValue) {
   ctx.stroke();
 }
 
-function drawLegend(ctx, x, y) {
+function drawLegend(ctx, chartRight, y) {
   const items = [
     ["上传", "#0f8b5f"],
     ["下载", "#1264a3"],
   ];
+  // 从右向左排列，避免遮挡 Y 轴标签
+  const itemWidth = 72;
+  const startX = chartRight - items.length * itemWidth;
   items.forEach((item, index) => {
-    const offset = index * 72;
+    const offset = index * itemWidth;
     ctx.fillStyle = item[1];
-    ctx.fillRect(x + offset, y, 22, 5);
+    ctx.fillRect(startX + offset, y, 22, 5);
     ctx.fillStyle = "#171a18";
-    ctx.fillText(item[0], x + offset + 28, y + 7);
+    ctx.fillText(item[0], startX + offset + 28, y + 7);
   });
 }
 
@@ -256,9 +298,18 @@ function escapeHTML(value) {
 }
 
 function syncControls() {
-  const custom = elements.preset.value === "custom";
-  elements.from.disabled = !custom;
-  elements.to.disabled = !custom;
+  const mode = elements.preset.value;
+  const isDaterange = mode === "daterange";
+  const isCustom = mode === "custom";
+  elements.fromDate.disabled = !isDaterange;
+  elements.toDate.disabled = !isDaterange;
+  elements.from.disabled = !isCustom;
+  elements.to.disabled = !isCustom;
+  // 隐藏不需要的输入组，减少视觉干扰
+  elements.fromDate.closest("label").hidden = !isDaterange;
+  elements.toDate.closest("label").hidden = !isDaterange;
+  elements.from.closest("label").hidden = !isCustom;
+  elements.to.closest("label").hidden = !isCustom;
 }
 
 function updateAutoRefresh() {
@@ -404,8 +455,10 @@ window.addEventListener("beforeunload", cleanupPage);
 // 恢复已保存的偏好设置
 const savedPrefs = loadSavedPrefs();
 if (savedPrefs.preset) { elements.preset.value = savedPrefs.preset; }
-if (savedPrefs.from) { elements.from.value = savedPrefs.from; }
-if (savedPrefs.to) { elements.to.value = savedPrefs.to; }
+if (savedPrefs.fromDate) { elements.fromDate.value = savedPrefs.fromDate; }
+if (savedPrefs.toDate) { elements.toDate.value = savedPrefs.toDate; }
+if (savedPrefs.from) { elements.from.value = normalizeDatetimeLocalPref(savedPrefs.from); }
+if (savedPrefs.to) { elements.to.value = normalizeDatetimeLocalPref(savedPrefs.to); }
 if (savedPrefs.autoRefresh) { elements.autoRefresh.checked = true; }
 syncControls();
 startLiveStream();

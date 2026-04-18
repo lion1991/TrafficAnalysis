@@ -1,6 +1,8 @@
 const elements = {
   preset: document.querySelector("#preset"),
   date: document.querySelector("#date"),
+  fromDate: document.querySelector("#fromDate"),
+  toDate: document.querySelector("#toDate"),
   from: document.querySelector("#from"),
   to: document.querySelector("#to"),
   clientIP: document.querySelector("#clientIP"),
@@ -42,6 +44,8 @@ function savePrefs() {
       JSON.stringify({
         preset: elements.preset.value,
         date: elements.date.value,
+        fromDate: elements.fromDate.value,
+        toDate: elements.toDate.value,
         from: elements.from.value,
         to: elements.to.value,
         clientIP: elements.clientIP.value,
@@ -59,6 +63,8 @@ function resetPrefs() {
   } catch {}
   elements.preset.value = "1h";
   elements.date.value = todayText();
+  elements.fromDate.value = "";
+  elements.toDate.value = "";
   elements.from.value = "";
   elements.to.value = "";
   elements.clientIP.value = "";
@@ -103,19 +109,52 @@ function clientKey(row) {
   return `${row.client_ip || ""}|${row.client_mac || ""}`;
 }
 
+function datetimeLocalToApi(value) {
+  // datetime-local 的格式是 YYYY-MM-DDTHH:MM，后端期望 YYYY-MM-DD HH:MM
+  return value.trim().replace("T", " ");
+}
+
+function normalizeDatetimeLocalPref(value) {
+  return String(value || "").trim().replace(" ", "T");
+}
+
+function formatDateInputValue(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// 日期加 N 天（用于计算包含整个结束日的开区间结束点）
+function addDays(dateStr, days) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatDateInputValue(date);
+}
+
 function buildRangeParams() {
   const params = new URLSearchParams();
-  if (elements.preset.value === "date") {
+  const mode = elements.preset.value;
+  if (mode === "date") {
     params.set("date", elements.date.value || todayText());
-  } else if (elements.preset.value === "custom") {
+  } else if (mode === "daterange") {
+    if (elements.fromDate.value) {
+      params.set("from", elements.fromDate.value + " 00:00");
+    }
+    if (elements.toDate.value) {
+      // 包含结束日整天：发送次日 00:00 作为开区间结束点
+      params.set("to", addDays(elements.toDate.value, 1) + " 00:00");
+    }
+  } else if (mode === "custom") {
     if (elements.from.value.trim()) {
-      params.set("from", elements.from.value.trim());
+      params.set("from", datetimeLocalToApi(elements.from.value));
     }
     if (elements.to.value.trim()) {
-      params.set("to", elements.to.value.trim());
+      params.set("to", datetimeLocalToApi(elements.to.value));
     }
   } else {
-    params.set("last", elements.preset.value);
+    params.set("last", mode);
   }
   if (elements.clientIP.value.trim()) {
     params.set("client_ip", elements.clientIP.value.trim());
@@ -443,9 +482,20 @@ function escapeAttribute(value) {
 
 function syncControls() {
   const mode = elements.preset.value;
-  elements.date.disabled = mode !== "date";
-  elements.from.disabled = mode !== "custom";
-  elements.to.disabled = mode !== "custom";
+  const isDate = mode === "date";
+  const isDaterange = mode === "daterange";
+  const isCustom = mode === "custom";
+  elements.date.disabled = !isDate;
+  elements.fromDate.disabled = !isDaterange;
+  elements.toDate.disabled = !isDaterange;
+  elements.from.disabled = !isCustom;
+  elements.to.disabled = !isCustom;
+  // 隐藏不需要的输入组，减少视觉干扰
+  elements.date.closest("label").hidden = !isDate;
+  elements.fromDate.closest("label").hidden = !isDaterange;
+  elements.toDate.closest("label").hidden = !isDaterange;
+  elements.from.closest("label").hidden = !isCustom;
+  elements.to.closest("label").hidden = !isCustom;
 }
 
 function stopPolling() {
@@ -584,8 +634,10 @@ const savedPrefs = loadSavedPrefs();
 if (savedPrefs.preset) { elements.preset.value = savedPrefs.preset; }
 if (savedPrefs.date) { elements.date.value = savedPrefs.date; }
 else { elements.date.value = todayText(); }
-if (savedPrefs.from) { elements.from.value = savedPrefs.from; }
-if (savedPrefs.to) { elements.to.value = savedPrefs.to; }
+if (savedPrefs.fromDate) { elements.fromDate.value = savedPrefs.fromDate; }
+if (savedPrefs.toDate) { elements.toDate.value = savedPrefs.toDate; }
+if (savedPrefs.from) { elements.from.value = normalizeDatetimeLocalPref(savedPrefs.from); }
+if (savedPrefs.to) { elements.to.value = normalizeDatetimeLocalPref(savedPrefs.to); }
 if (savedPrefs.clientIP) { elements.clientIP.value = savedPrefs.clientIP; }
 if (savedPrefs.autoRefresh) { elements.autoRefresh.checked = true; }
 if (savedPrefs.sortField) {
