@@ -78,6 +78,14 @@ Example:
     "http_url": "https://api.ipify.org",
     "static": "",
     "refresh_seconds": 300
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_ids": [],
+    "poll_seconds": 30,
+    "daily_time": "08:00",
+    "timezone": "Local"
   }
 }
 ```
@@ -85,6 +93,22 @@ Example:
 `wan_ip.http_url` should return a plain IP address. This works when the analyzer's management network exits through the same router WAN IP that is being mirrored. If the analyzer uses a different Internet exit path, set `wan_ip.static` or replace the HTTP URL with an internal endpoint that returns the router WAN IP.
 
 WAN IP refresh is adaptive. After a successful refresh, the analyzer keeps the IP valid while packets continue to contain that IP, so it does not call the HTTP endpoint on every interval during active traffic. If traffic no longer matches the cached WAN IP and public `other` traffic appears, the analyzer requests an immediate refresh with a short debounce. The configured `refresh_seconds` remains the fallback check interval for idle or stale periods.
+
+Telegram is optional and disabled by default. When enabled, the bot uses Telegram Bot API long polling, replies only to configured `chat_ids`, and pushes the previous local day's summary once per day at `telegram.daily_time`.
+
+Supported commands:
+
+```text
+/traffic
+/today
+/yesterday
+/last 1h
+/last 24h
+/last 7d
+/help
+```
+
+The summary includes total upload/download, top upload clients, and top remote IP/port rows when `lan_interface` has captured endpoint data. `telegram.timezone` may be `Local` or an IANA timezone such as `Asia/Shanghai`. Enable Telegram in only one long-running process for a given database to avoid duplicate daily pushes.
 
 ## Capture
 

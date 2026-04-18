@@ -16,5 +16,13 @@
     "http_url": "https://api.ipify.org",
     "static": "",
     "refresh_seconds": 300
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_ids": [],
+    "poll_seconds": 30,
+    "daily_time": "08:00",
+    "timezone": "Local"
   }
 }

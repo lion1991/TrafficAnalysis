@@ -23,6 +23,7 @@ type Config struct {
 	IgnoreLAN     bool        `json:"ignore_lan_traffic"`
 	WANIP         WANIPConfig `json:"wan_ip"`
 	Retention     Retention   `json:"retention"`
+	Telegram      Telegram    `json:"telegram"`
 }
 
 type WANIPConfig struct {
@@ -35,6 +36,15 @@ type Retention struct {
 	MinuteDays     int `json:"minute_days"`
 	HourlyDays     int `json:"hourly_days"`
 	CompactSeconds int `json:"compact_seconds"`
+}
+
+type Telegram struct {
+	Enabled     bool     `json:"enabled"`
+	BotToken    string   `json:"bot_token"`
+	ChatIDs     []string `json:"chat_ids"`
+	PollSeconds int      `json:"poll_seconds"`
+	DailyTime   string   `json:"daily_time"`
+	Timezone    string   `json:"timezone"`
 }
 
 func Default() Config {
@@ -55,6 +65,11 @@ func Default() Config {
 			MinuteDays:     30,
 			HourlyDays:     365,
 			CompactSeconds: 3600,
+		},
+		Telegram: Telegram{
+			PollSeconds: 30,
+			DailyTime:   "08:00",
+			Timezone:    "Local",
 		},
 	}
 }
@@ -105,11 +120,41 @@ func (c *Config) applyDefaults() {
 	if c.Retention.CompactSeconds <= 0 {
 		c.Retention.CompactSeconds = defaults.Retention.CompactSeconds
 	}
+	if c.Telegram.PollSeconds <= 0 {
+		c.Telegram.PollSeconds = defaults.Telegram.PollSeconds
+	}
+	if c.Telegram.DailyTime == "" {
+		c.Telegram.DailyTime = defaults.Telegram.DailyTime
+	}
+	if c.Telegram.Timezone == "" {
+		c.Telegram.Timezone = defaults.Telegram.Timezone
+	}
 }
 
 func (c Config) ValidateForCapture() error {
 	if c.Interface == "" {
 		return errors.New("interface is required for live capture")
+	}
+	return nil
+}
+
+func (c Config) ValidateForTelegram() error {
+	if !c.Telegram.Enabled {
+		return nil
+	}
+	if c.Telegram.BotToken == "" {
+		return errors.New("telegram.bot_token is required when telegram.enabled is true")
+	}
+	if len(c.Telegram.ChatIDs) == 0 {
+		return errors.New("telegram.chat_ids is required when telegram.enabled is true")
+	}
+	if _, err := time.Parse("15:04", c.Telegram.DailyTime); err != nil {
+		return fmt.Errorf("parse telegram.daily_time: %w", err)
+	}
+	if c.Telegram.Timezone != "Local" {
+		if _, err := time.LoadLocation(c.Telegram.Timezone); err != nil {
+			return fmt.Errorf("load telegram.timezone: %w", err)
+		}
 	}
 	return nil
 }
@@ -140,6 +185,17 @@ func (r Retention) HourlyDuration() time.Duration {
 
 func (r Retention) CompactInterval() time.Duration {
 	return time.Duration(r.CompactSeconds) * time.Second
+}
+
+func (t Telegram) PollInterval() time.Duration {
+	return time.Duration(t.PollSeconds) * time.Second
+}
+
+func (t Telegram) Location() (*time.Location, error) {
+	if t.Timezone == "" || t.Timezone == "Local" {
+		return time.Local, nil
+	}
+	return time.LoadLocation(t.Timezone)
 }
 
 func ParseLocalNetworks(networks []string) ([]netip.Prefix, error) {

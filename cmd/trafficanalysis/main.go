@@ -20,6 +20,7 @@ import (
 	"trafficanalysis/internal/config"
 	"trafficanalysis/internal/httpapi"
 	"trafficanalysis/internal/store"
+	"trafficanalysis/internal/telegrambot"
 	"trafficanalysis/internal/traffic"
 	"trafficanalysis/internal/wanip"
 )
@@ -240,6 +241,9 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	var liveHub *httpapi.LiveHub
 	var webErrCh <-chan error
 	nameCache := newClientNameCache()
+	if err := startTelegramBot(ctx, cfg, st); err != nil {
+		return err
+	}
 	if web.enabled {
 		webMeter = traffic.NewMeter()
 		webClientMeter = traffic.NewClientMeter()
@@ -482,6 +486,9 @@ func runServe(args []string) error {
 		return err
 	}
 	defer st.Close()
+	if err := startTelegramBot(ctx, resolved.cfg, st); err != nil {
+		return err
+	}
 
 	server := &http.Server{
 		Addr:    resolved.addr,
@@ -518,6 +525,7 @@ type serveConfigOptions struct {
 }
 
 type resolvedServeConfig struct {
+	cfg    config.Config
 	dbPath string
 	addr   string
 }
@@ -536,7 +544,35 @@ func resolveServeConfig(options serveConfigOptions) (resolvedServeConfig, error)
 	if addr == "" {
 		addr = ":8080"
 	}
-	return resolvedServeConfig{dbPath: dbPath, addr: addr}, nil
+	cfg.Database = dbPath
+	return resolvedServeConfig{cfg: cfg, dbPath: dbPath, addr: addr}, nil
+}
+
+func startTelegramBot(ctx context.Context, cfg config.Config, st *store.SQLiteStore) error {
+	if !cfg.Telegram.Enabled {
+		return nil
+	}
+	if err := cfg.ValidateForTelegram(); err != nil {
+		return err
+	}
+	location, err := cfg.Telegram.Location()
+	if err != nil {
+		return err
+	}
+	client := telegrambot.NewHTTPClient(cfg.Telegram.BotToken)
+	bot := telegrambot.New(telegrambot.Config{
+		ChatIDs:      cfg.Telegram.ChatIDs,
+		PollInterval: cfg.Telegram.PollInterval(),
+		DailyTime:    cfg.Telegram.DailyTime,
+		Location:     location,
+	}, st, client)
+	go func() {
+		if err := bot.Run(ctx, client); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "telegram bot error: %v\n", err)
+		}
+	}()
+	fmt.Printf("telegram bot enabled: chats=%d daily_time=%s timezone=%s\n", len(cfg.Telegram.ChatIDs), cfg.Telegram.DailyTime, cfg.Telegram.Timezone)
+	return nil
 }
 
 func displayListenAddr(addr string) string {
