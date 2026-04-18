@@ -21,6 +21,16 @@ type ClientBucketKey struct {
 	Protocol  string
 }
 
+type EndpointBucketKey struct {
+	Start      time.Time
+	ClientIP   netip.Addr
+	ClientMAC  string
+	RemoteIP   netip.Addr
+	RemotePort uint16
+	Direction  Direction
+	Protocol   string
+}
+
 type BucketValue struct {
 	Bytes   int64
 	Packets int64
@@ -183,4 +193,94 @@ func (a *ClientAggregator) DrainAll() map[ClientBucketKey]BucketValue {
 	drained := a.buckets
 	a.buckets = make(map[ClientBucketKey]BucketValue)
 	return drained
+}
+
+type EndpointAggregator struct {
+	mu       sync.Mutex
+	interval time.Duration
+	buckets  map[EndpointBucketKey]BucketValue
+}
+
+func NewEndpointAggregator(interval time.Duration) *EndpointAggregator {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return &EndpointAggregator{
+		interval: interval,
+		buckets:  make(map[EndpointBucketKey]BucketValue),
+	}
+}
+
+func (a *EndpointAggregator) Add(packet Packet, client ClientTraffic) {
+	remoteIP, remotePort, ok := remoteEndpoint(packet, client.Direction)
+	if !ok {
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	protocol := packet.Protocol
+	if protocol == "" {
+		protocol = "unknown"
+	}
+
+	key := EndpointBucketKey{
+		Start:      packet.Timestamp.Truncate(a.interval).UTC(),
+		ClientIP:   client.ClientIP,
+		ClientMAC:  client.ClientMAC,
+		RemoteIP:   remoteIP,
+		RemotePort: remotePort,
+		Direction:  client.Direction,
+		Protocol:   protocol,
+	}
+	value := a.buckets[key]
+	value.Bytes += int64(packet.Bytes)
+	value.Packets++
+	a.buckets[key] = value
+}
+
+func (a *EndpointAggregator) Snapshot() map[EndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	snapshot := make(map[EndpointBucketKey]BucketValue, len(a.buckets))
+	for key, value := range a.buckets {
+		snapshot[key] = value
+	}
+	return snapshot
+}
+
+func (a *EndpointAggregator) DrainBefore(cutoff time.Time) map[EndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := make(map[EndpointBucketKey]BucketValue)
+	for key, value := range a.buckets {
+		if key.Start.Before(cutoff) {
+			drained[key] = value
+			delete(a.buckets, key)
+		}
+	}
+	return drained
+}
+
+func (a *EndpointAggregator) DrainAll() map[EndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := a.buckets
+	a.buckets = make(map[EndpointBucketKey]BucketValue)
+	return drained
+}
+
+func remoteEndpoint(packet Packet, direction Direction) (netip.Addr, uint16, bool) {
+	switch direction {
+	case DirectionUpload:
+		return packet.DstIP, packet.DstPort, packet.DstIP.IsValid()
+	case DirectionDownload:
+		return packet.SrcIP, packet.SrcPort, packet.SrcIP.IsValid()
+	default:
+		return netip.Addr{}, 0, false
+	}
 }

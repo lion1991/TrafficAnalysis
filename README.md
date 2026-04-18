@@ -190,6 +190,9 @@ Data is stored as time buckets in SQLite:
 - `client_buckets`: LAN-client public traffic by bucket, client IP, client MAC, direction, and protocol
 - `client_hourly_buckets`: LAN-client hourly totals compacted from older minute buckets
 - `client_archive_buckets`: all-time LAN-client totals archived from data older than the hourly retention window
+- `endpoint_buckets`: LAN-client public traffic by bucket, client, remote IP, remote port, direction, and protocol
+- `endpoint_hourly_buckets`: remote endpoint hourly totals compacted from older minute buckets
+- `endpoint_archive_buckets`: all-time remote endpoint totals archived from data older than the hourly retention window
 - `client_names`: learned client names keyed by client IP and MAC
 - `client_aliases`: manual display names, keyed by MAC when available so aliases survive DHCP IP changes
 
@@ -208,6 +211,7 @@ Then open:
 ```text
 http://<linux-server-ip>:8080
 http://<linux-server-ip>:8080/clients.html
+http://<linux-server-ip>:8080/analysis.html
 ```
 
 `-addr :8080` listens on all interfaces. Bind `127.0.0.1:8080` only when a reverse proxy or SSH tunnel will expose it.
@@ -228,6 +232,7 @@ GET /api/traffic?month=2026-04
 GET /api/traffic?from=2026-04-17%2000:00&to=2026-04-18%2000:00
 GET /api/clients?last=24h
 GET /api/clients?date=2026-04-17&client_ip=192.168.248.22
+GET /api/analysis?last=24h
 PUT /api/clients/alias
 ```
 
@@ -237,6 +242,8 @@ Response contains:
 - `totals`: upload/download/lan/other/unknown bytes and packet total
 - `series`: bucketed upload/download/lan/other/unknown values for charting
 - `breakdown`: totals by direction and protocol
+
+`/analysis.html` adds a traffic analysis view over the same stored buckets. It highlights upload share, peak upload bucket, active client count, top upload/download clients, remote IP/port transfer ranking, and the current data limits. Remote IP/port ranking requires `lan_interface` capture because it is derived from LAN-side client traffic before NAT.
 
 `/api/clients` returns:
 

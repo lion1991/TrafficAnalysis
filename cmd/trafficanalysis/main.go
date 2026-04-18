@@ -229,6 +229,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
 	clientClassifier := traffic.NewLANClientClassifier(localNetworks)
 	clientAggregator := traffic.NewClientAggregator(cfg.BucketDuration())
+	endpointAggregator := traffic.NewEndpointAggregator(cfg.BucketDuration())
 
 	var consoleMeter *traffic.Meter
 	if output.enabled {
@@ -294,6 +295,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				}
 				if client, ok := clientClassifier.Classify(packet); ok {
 					clientAggregator.Add(packet, client)
+					endpointAggregator.Add(packet, client)
 					if webClientMeter != nil {
 						webClientMeter.AddPacket(client, packet)
 					}
@@ -333,10 +335,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		select {
 		case <-ctx.Done():
 			cancelRunners()
-			return flushAll(context.Background(), st, aggregator, clientAggregator)
+			return flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator)
 		case err := <-errCh:
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
@@ -345,12 +347,12 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				continue
 			}
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
 		case <-flushTicker.C:
-			if err := flushCompleteBuckets(ctx, st, aggregator, clientAggregator, cfg.BucketDuration()); err != nil {
+			if err := flushCompleteBuckets(ctx, st, aggregator, clientAggregator, endpointAggregator, cfg.BucketDuration()); err != nil {
 				return err
 			}
 		case now := <-retentionTicker.C:
@@ -394,19 +396,25 @@ func buildWANIPManager(cfg config.Config) (*wanip.Manager, error) {
 	return wanip.NewManager(wanip.NewChainProvider(providers...), cfg.WANIPRefreshInterval()), nil
 }
 
-func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, bucketDuration time.Duration) error {
+func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, bucketDuration time.Duration) error {
 	cutoff := time.Now().UTC().Truncate(bucketDuration)
 	if err := st.UpsertBuckets(ctx, aggregator.DrainBefore(cutoff)); err != nil {
 		return err
 	}
-	return st.UpsertClientBuckets(ctx, clientAggregator.DrainBefore(cutoff))
+	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainBefore(cutoff)); err != nil {
+		return err
+	}
+	return st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainBefore(cutoff))
 }
 
-func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator) error {
+func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator) error {
 	if err := st.UpsertBuckets(ctx, aggregator.DrainAll()); err != nil {
 		return err
 	}
-	return st.UpsertClientBuckets(ctx, clientAggregator.DrainAll())
+	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainAll()); err != nil {
+		return err
+	}
+	return st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainAll())
 }
 
 func runQuery(args []string) error {

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>流量分析 - TrafficAnalysis</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Traffic Analysis Console</p>
+          <h1>流量分析</h1>
+        </div>
+        <nav class="navLinks" aria-label="页面导航">
+          <a href="/">总览</a>
+          <a href="/clients.html">客户端</a>
+          <a href="/analysis.html" aria-current="page">流量分析</a>
+        </nav>
+        <div class="status" id="status">等待查询</div>
+      </section>
+
+      <section class="controls analysisControls" aria-label="分析条件">
+        <label class="controlPreset">
+          时间范围
+          <select id="preset">
+            <option value="1h">最近 1 小时</option>
+            <option value="6h">最近 6 小时</option>
+            <option value="24h">最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+            <option value="date">指定日期</option>
+            <option value="daterange">日期范围</option>
+            <option value="custom">自定义范围</option>
+          </select>
+        </label>
+        <label>
+          日期
+          <input id="date" type="date" />
+        </label>
+        <label>
+          开始日期
+          <input id="fromDate" type="date" />
+        </label>
+        <label>
+          结束日期
+          <input id="toDate" type="date" />
+        </label>
+        <label>
+          开始时间
+          <input id="from" type="datetime-local" />
+        </label>
+        <label>
+          结束时间
+          <input id="to" type="datetime-local" />
+        </label>
+        <label class="checkbox">
+          <input id="autoRefresh" type="checkbox" />
+          自动刷新
+        </label>
+        <button id="queryButton" type="button" class="controlAction">分析</button>
+        <button id="resetButton" type="button" class="controlAction btnReset">重置</button>
+      </section>
+
+      <section class="metrics analysisMetrics" aria-label="分析汇总">
+        <article class="metric upload">
+          <span>上传总量</span>
+          <strong id="uploadTotal">0 B</strong>
+        </article>
+        <article class="metric download">
+          <span>下载总量</span>
+          <strong id="downloadTotal">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>上传占比</span>
+          <strong id="uploadShare">0.0%</strong>
+        </article>
+        <article class="metric">
+          <span>上传峰值</span>
+          <strong id="peakUpload">0 B</strong>
+        </article>
+        <article class="metric">
+          <span>活跃客户端</span>
+          <strong id="activeClients">0</strong>
+        </article>
+      </section>
+
+      <section class="analysisLead" aria-label="分析提示">
+        <div>
+          <h2>分析提示</h2>
+          <p id="rangeText">-</p>
+        </div>
+        <div class="signalGrid" id="signalsBody">
+          <article class="signal">
+            <span>状态</span>
+            <strong>暂无数据</strong>
+            <p>选择时间范围后开始分析。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid analysisGrid">
+        <article>
+          <h2>上传客户端排行</h2>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>客户端 IP</th>
+                  <th>上传</th>
+                  <th>下载</th>
+                  <th>包</th>
+                </tr>
+              </thead>
+              <tbody id="uploadClientsBody">
+                <tr><td colspan="5">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article>
+          <h2>下载客户端排行</h2>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>客户端 IP</th>
+                  <th>下载</th>
+                  <th>上传</th>
+                  <th>包</th>
+                </tr>
+              </thead>
+              <tbody id="downloadClientsBody">
+                <tr><td colspan="5">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="chartPanel" aria-label="远程 IP 传输排行">
+        <div class="chartTitle">
+          <h2>远程 IP 传输排行</h2>
+          <p>按远程 IP、端口和协议汇总上传/下载</p>
+        </div>
+        <div class="tableWrap">
+          <table class="remoteTable">
+            <thead>
+              <tr>
+                <th>远程 IP</th>
+                <th>端口</th>
+                <th>协议</th>
+                <th>上传</th>
+                <th>下载</th>
+                <th>总计</th>
+                <th>客户端</th>
+                <th>包</th>
+              </tr>
+            </thead>
+            <tbody id="remoteEndpointsBody">
+              <tr><td colspan="8">暂无数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="chartPanel" aria-label="数据边界">
+        <div class="chartTitle">
+          <h2>数据边界</h2>
+          <p>用于解释当前分析结果的覆盖范围</p>
+        </div>
+        <ul class="limitationList" id="limitationsBody">
+          <li>等待查询。</li>
+        </ul>
+      </section>
+    </main>
+    <script src="/analysis.js" defer></script>
+  </body>
+</html>

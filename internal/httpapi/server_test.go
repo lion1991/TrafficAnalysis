@@ -17,14 +17,15 @@ import (
 )
 
 type fakeBucketQueryer struct {
-	from       time.Time
-	to         time.Time
-	clientIP   string
-	aliasIP    string
-	aliasMAC   string
-	aliasName  string
-	rows       []store.BucketRow
-	clientRows []store.ClientBucketRow
+	from         time.Time
+	to           time.Time
+	clientIP     string
+	aliasIP      string
+	aliasMAC     string
+	aliasName    string
+	rows         []store.BucketRow
+	clientRows   []store.ClientBucketRow
+	endpointRows []store.EndpointBucketRow
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
@@ -38,6 +39,12 @@ func (f *fakeBucketQueryer) QueryClientBuckets(ctx context.Context, from, to tim
 	f.to = to
 	f.clientIP = clientIP
 	return f.clientRows, nil
+}
+
+func (f *fakeBucketQueryer) QueryEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.EndpointBucketRow, error) {
+	f.from = from
+	f.to = to
+	return f.endpointRows, nil
 }
 
 func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
@@ -244,6 +251,157 @@ func TestClientsAPIReturnsClientTotalsAndBreakdown(t *testing.T) {
 	}
 }
 
+func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
+	queryer := &fakeBucketQueryer{
+		rows: []store.BucketRow{
+			{
+				Key: traffic.BucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 1200, Packets: 3},
+			},
+			{
+				Key: traffic.BucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 4200, Packets: 4},
+			},
+			{
+				Key: traffic.BucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+					Direction: traffic.DirectionDownload,
+					Protocol:  "udp",
+				},
+				Value: traffic.BucketValue{Bytes: 2100, Packets: 5},
+			},
+		},
+		clientRows: []store.ClientBucketRow{
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.22"),
+					ClientMAC: "00:11:22:33:44:55",
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value:      traffic.BucketValue{Bytes: 5000, Packets: 7},
+				Alias:      "书房 NAS",
+				Name:       "nas-box",
+				NameSource: "dhcp",
+			},
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.23"),
+					ClientMAC: "66:77:88:99:aa:bb",
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 2000, Packets: 2},
+			},
+		},
+		endpointRows: []store.EndpointBucketRow{
+			{
+				Key: traffic.EndpointBucketKey{
+					Start:      time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:   trafficMustAddr("192.168.248.22"),
+					ClientMAC:  "00:11:22:33:44:55",
+					RemoteIP:   trafficMustAddr("203.0.113.9"),
+					RemotePort: 443,
+					Direction:  traffic.DirectionUpload,
+					Protocol:   "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 4096, Packets: 4},
+			},
+			{
+				Key: traffic.EndpointBucketKey{
+					Start:      time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+					ClientIP:   trafficMustAddr("192.168.248.23"),
+					ClientMAC:  "66:77:88:99:aa:bb",
+					RemoteIP:   trafficMustAddr("203.0.113.9"),
+					RemotePort: 443,
+					Direction:  traffic.DirectionDownload,
+					Protocol:   "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 2048, Packets: 2},
+			},
+		},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis?from=2026-04-17%2010:00&to=2026-04-17%2010:03", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.from != time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected query from: %s", queryer.from)
+	}
+	if queryer.to != time.Date(2026, 4, 17, 10, 3, 0, 0, time.UTC) {
+		t.Fatalf("unexpected query to: %s", queryer.to)
+	}
+	if queryer.clientIP != "" {
+		t.Fatalf("expected analysis to query all clients, got filter %q", queryer.clientIP)
+	}
+
+	var body struct {
+		Range  responseRange `json:"range"`
+		Totals struct {
+			UploadBytes       int64   `json:"upload_bytes"`
+			DownloadBytes     int64   `json:"download_bytes"`
+			UploadShare       float64 `json:"upload_share"`
+			PeakUploadBytes   int64   `json:"peak_upload_bytes"`
+			PeakUploadBucket  string  `json:"peak_upload_bucket"`
+			ActiveClientCount int     `json:"active_client_count"`
+		} `json:"totals"`
+		TopUploadClients []clientSummaryRow `json:"top_upload_clients"`
+		RemoteEndpoints  []struct {
+			RemoteIP      string `json:"remote_ip"`
+			RemotePort    uint16 `json:"remote_port"`
+			Protocol      string `json:"protocol"`
+			UploadBytes   int64  `json:"upload_bytes"`
+			DownloadBytes int64  `json:"download_bytes"`
+			ClientCount   int    `json:"client_count"`
+		} `json:"remote_endpoints"`
+		Signals []struct {
+			Label string `json:"label"`
+			Level string `json:"level"`
+			Value string `json:"value"`
+		} `json:"signals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Totals.UploadBytes != 5400 || body.Totals.DownloadBytes != 2100 {
+		t.Fatalf("unexpected totals: %#v", body.Totals)
+	}
+	if body.Totals.PeakUploadBytes != 4200 || body.Totals.PeakUploadBucket != "2026-04-17T10:01:00Z" {
+		t.Fatalf("unexpected upload peak: %#v", body.Totals)
+	}
+	if body.Totals.ActiveClientCount != 2 {
+		t.Fatalf("unexpected active client count: %d", body.Totals.ActiveClientCount)
+	}
+	if len(body.TopUploadClients) != 2 || body.TopUploadClients[0].DisplayName != "书房 NAS" || body.TopUploadClients[0].UploadBytes != 5000 {
+		t.Fatalf("unexpected top upload clients: %#v", body.TopUploadClients)
+	}
+	if len(body.RemoteEndpoints) != 1 {
+		t.Fatalf("expected one aggregated remote endpoint, got %#v", body.RemoteEndpoints)
+	}
+	if body.RemoteEndpoints[0].RemoteIP != "203.0.113.9" || body.RemoteEndpoints[0].RemotePort != 443 || body.RemoteEndpoints[0].UploadBytes != 4096 || body.RemoteEndpoints[0].DownloadBytes != 2048 || body.RemoteEndpoints[0].ClientCount != 2 {
+		t.Fatalf("unexpected remote endpoint summary: %#v", body.RemoteEndpoints[0])
+	}
+	if len(body.Signals) == 0 || body.Signals[0].Label == "" || body.Signals[0].Level == "" {
+		t.Fatalf("expected analysis signals, got %#v", body.Signals)
+	}
+}
+
 func TestClientAliasAPIStoresAlias(t *testing.T) {
 	queryer := &fakeBucketQueryer{}
 	handler := NewHandler(queryer, Options{Location: time.UTC})
@@ -414,6 +572,45 @@ func TestClientsPageIsServed(t *testing.T) {
 	}
 }
 
+func TestAnalysisPageIsServedAndFetchesAnalysisAPI(t *testing.T) {
+	handler := NewHandler(&fakeBucketQueryer{}, Options{Location: time.UTC})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/analysis.html", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "流量分析") {
+		t.Fatalf("expected analysis page, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "远程 IP") {
+		t.Fatalf("expected analysis page to show remote IP transfer section")
+	}
+
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{"/api/analysis", "loadAnalysis", "renderSignals", "top_upload_clients", "remote_endpoints", "renderRemoteEndpoints"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis script to contain %q", want)
+		}
+	}
+}
+
+func TestNavigationLinksIncludeAnalysisPage(t *testing.T) {
+	for _, path := range []string{"static/index.html", "static/clients.html", "static/analysis.html"} {
+		html, err := embeddedStatic.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(html), `href="/analysis.html"`) {
+			t.Fatalf("expected %s to link to analysis page", path)
+		}
+	}
+}
+
 func TestClientsPageIntegratesLiveRatesIntoSummaryTable(t *testing.T) {
 	html, err := embeddedStatic.ReadFile("static/clients.html")
 	if err != nil {
@@ -497,7 +694,7 @@ func TestClientsPageDoesNotReplaceLearnedNameWithLiveFallback(t *testing.T) {
 }
 
 func TestWebPagesUseTimezoneSafeDateRangeHelpers(t *testing.T) {
-	for _, path := range []string{"static/app.js", "static/clients.js"} {
+	for _, path := range []string{"static/app.js", "static/clients.js", "static/analysis.js"} {
 		js, err := embeddedStatic.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -515,7 +712,7 @@ func TestWebPagesUseTimezoneSafeDateRangeHelpers(t *testing.T) {
 }
 
 func TestWebPagesMigrateSavedDatetimePrefs(t *testing.T) {
-	for _, path := range []string{"static/app.js", "static/clients.js"} {
+	for _, path := range []string{"static/app.js", "static/clients.js", "static/analysis.js"} {
 		js, err := embeddedStatic.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -549,7 +746,7 @@ func TestWebPagesUseSharedControlSizing(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{"static/index.html", "static/clients.html"} {
+	for _, path := range []string{"static/index.html", "static/clients.html", "static/analysis.html"} {
 		html, err := embeddedStatic.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
