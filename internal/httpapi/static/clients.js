@@ -21,6 +21,17 @@ const clientsByKey = new Map();
 const liveKeys = new Set();
 let sortState = { field: "display_name", direction: "asc" };
 
+function formatUTC8(isoStr) {
+  const date = new Date(isoStr);
+  if (isNaN(date.getTime())) {
+    return isoStr;
+  }
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const local = new Date(date.getTime() + offsetMs);
+  const iso = local.toISOString();
+  return iso.slice(0, 10) + " " + iso.slice(11, 16);
+}
+
 function formatBytes(bytes) {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let value = Number(bytes || 0);
@@ -121,7 +132,7 @@ function renderClients(data) {
     }
   }
 
-  elements.rangeText.textContent = `${data.range.from} 到 ${data.range.to}`;
+  elements.rangeText.textContent = `${formatUTC8(data.range.from)} 到 ${formatUTC8(data.range.to)}`;
   renderClientRows();
 }
 
@@ -301,17 +312,17 @@ function renderClientRow(row) {
   const source = row.alias ? "alias" : row.name_source || (row.live_only ? "live" : "-");
   return `
     <tr data-client-key="${key}">
-      <td class="nameCell">${escapeHTML(row.display_name || row.client_ip || row.client_mac)}</td>
-      <td>${escapeHTML(source)}</td>
-      <td>${escapeHTML(row.client_ip)}</td>
-      <td>${escapeHTML(row.client_mac || "-")}</td>
-      <td class="rateCell">${formatBytes(row.upload_bps)}/s</td>
-      <td class="rateCell">${formatBytes(row.download_bps)}/s</td>
-      <td>${row.live_only ? "-" : formatBytes(row.upload_bytes)}</td>
-      <td>${row.live_only ? "-" : formatBytes(row.download_bytes)}</td>
-      <td>${row.live_only ? "-" : formatBytes(total)}</td>
-      <td>${Number(row.packets || 0).toLocaleString()}</td>
-      <td>
+      <td class="nameCell" data-label="名称">${escapeHTML(row.display_name || row.client_ip || row.client_mac)}</td>
+      <td data-label="来源">${escapeHTML(source)}</td>
+      <td data-label="IP">${escapeHTML(row.client_ip)}</td>
+      <td data-label="MAC">${escapeHTML(row.client_mac || "-")}</td>
+      <td class="rateCell" data-label="实时上传">${formatBytes(row.upload_bps)}/s</td>
+      <td class="rateCell" data-label="实时下载">${formatBytes(row.download_bps)}/s</td>
+      <td data-label="上传">${row.live_only ? "-" : formatBytes(row.upload_bytes)}</td>
+      <td data-label="下载">${row.live_only ? "-" : formatBytes(row.download_bytes)}</td>
+      <td data-label="总计">${row.live_only ? "-" : formatBytes(total)}</td>
+      <td data-label="包">${Number(row.packets || 0).toLocaleString()}</td>
+      <td data-label="别名">
         <div class="aliasEditor">
           <input type="text" data-alias-input-key="${key}" value="${escapeAttribute(row.alias || "")}" placeholder="${escapeAttribute(row.learned_name || row.display_name || "设备别名")}" aria-label="设备别名" />
           <button type="button" data-alias-key="${key}">保存</button>

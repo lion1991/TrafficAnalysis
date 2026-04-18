@@ -23,6 +23,19 @@ let refreshTimer = null;
 let eventSource = null;
 let lastData = null;
 
+function formatUTC8(isoStr) {
+  const date = new Date(isoStr);
+  if (isNaN(date.getTime())) {
+    return isoStr;
+  }
+  // 手动转为 UTC+8（固定偏移，不受浏览器时区影响）
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const local = new Date(date.getTime() + offsetMs);
+  const iso = local.toISOString(); // 始终是 UTC，但加了 +8h 的偏移
+  // 格式化为 "YYYY-MM-DD HH:mm"
+  return iso.slice(0, 10) + " " + iso.slice(11, 16);
+}
+
 function formatBytes(bytes) {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let value = Number(bytes || 0);
@@ -83,7 +96,7 @@ function renderTraffic(data) {
   elements.lanTotal.textContent = formatBytes(data.totals.lan_bytes);
   elements.otherTotal.textContent = formatBytes((data.totals.other_bytes || 0) + (data.totals.unknown_bytes || 0));
   elements.packetTotal.textContent = Number(data.totals.packets || 0).toLocaleString();
-  elements.rangeText.textContent = `${data.range.from} 到 ${data.range.to}`;
+  elements.rangeText.textContent = `${formatUTC8(data.range.from)} 到 ${formatUTC8(data.range.to)}`;
 
   renderChart(data.series || []);
   renderBreakdown(data.breakdown || []);
