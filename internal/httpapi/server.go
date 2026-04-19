@@ -34,6 +34,10 @@ type EndpointBucketQueryer interface {
 	QueryEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.EndpointBucketRow, error)
 }
 
+type WANEndpointBucketQueryer interface {
+	QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.WANEndpointBucketRow, error)
+}
+
 type ClientAliasWriter interface {
 	UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error
 }
@@ -45,13 +49,14 @@ type Options struct {
 }
 
 type server struct {
-	queryer         BucketQueryer
-	clientQueryer   ClientBucketQueryer
-	endpointQueryer EndpointBucketQueryer
-	aliasWriter     ClientAliasWriter
-	location        *time.Location
-	now             func() time.Time
-	liveSource      LiveSource
+	queryer            BucketQueryer
+	clientQueryer      ClientBucketQueryer
+	endpointQueryer    EndpointBucketQueryer
+	wanEndpointQueryer WANEndpointBucketQueryer
+	aliasWriter        ClientAliasWriter
+	location           *time.Location
+	now                func() time.Time
+	liveSource         LiveSource
 }
 
 func NewHandler(queryer BucketQueryer, options Options) http.Handler {
@@ -65,13 +70,14 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	}
 
 	srv := server{
-		queryer:         queryer,
-		clientQueryer:   clientBucketQueryer(queryer),
-		endpointQueryer: endpointBucketQueryer(queryer),
-		aliasWriter:     clientAliasWriter(queryer),
-		location:        location,
-		now:             now,
-		liveSource:      options.LiveSource,
+		queryer:            queryer,
+		clientQueryer:      clientBucketQueryer(queryer),
+		endpointQueryer:    endpointBucketQueryer(queryer),
+		wanEndpointQueryer: wanEndpointBucketQueryer(queryer),
+		aliasWriter:        clientAliasWriter(queryer),
+		location:           location,
+		now:                now,
+		liveSource:         options.LiveSource,
 	}
 
 	mux := http.NewServeMux()
@@ -106,6 +112,14 @@ func endpointBucketQueryer(queryer BucketQueryer) EndpointBucketQueryer {
 		return nil
 	}
 	return endpointQueryer
+}
+
+func wanEndpointBucketQueryer(queryer BucketQueryer) WANEndpointBucketQueryer {
+	wanEndpointQueryer, ok := queryer.(WANEndpointBucketQueryer)
+	if !ok {
+		return nil
+	}
+	return wanEndpointQueryer
 }
 
 func (s server) handleTraffic(w http.ResponseWriter, r *http.Request) {
@@ -257,8 +271,16 @@ func (s server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var wanEndpointRows []store.WANEndpointBucketRow
+	if s.wanEndpointQueryer != nil {
+		wanEndpointRows, err = s.wanEndpointQueryer.QueryWANEndpointBuckets(r.Context(), from, to)
+		if err != nil {
+			http.Error(w, "query WAN endpoint traffic buckets", http.StatusInternalServerError)
+			return
+		}
+	}
 
-	response := buildAnalysisResponse(from, to, trafficRows, clientRows, endpointRows)
+	response := buildAnalysisResponse(from, to, trafficRows, clientRows, endpointRows, wanEndpointRows)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		return
@@ -360,13 +382,14 @@ type clientsResponse struct {
 }
 
 type analysisResponse struct {
-	Range              responseRange       `json:"range"`
-	Totals             analysisTotals      `json:"totals"`
-	TopUploadClients   []clientSummaryRow  `json:"top_upload_clients"`
-	TopDownloadClients []clientSummaryRow  `json:"top_download_clients"`
-	RemoteEndpoints    []remoteEndpointRow `json:"remote_endpoints"`
-	Signals            []analysisSignal    `json:"signals"`
-	Limitations        []string            `json:"limitations"`
+	Range              responseRange          `json:"range"`
+	Totals             analysisTotals         `json:"totals"`
+	TopUploadClients   []clientSummaryRow     `json:"top_upload_clients"`
+	TopDownloadClients []clientSummaryRow     `json:"top_download_clients"`
+	RemoteEndpoints    []remoteEndpointRow    `json:"remote_endpoints"`
+	WANRemoteEndpoints []wanRemoteEndpointRow `json:"wan_remote_endpoints"`
+	Signals            []analysisSignal       `json:"signals"`
+	Limitations        []string               `json:"limitations"`
 }
 
 type analysisTotals struct {
@@ -398,6 +421,15 @@ type remoteEndpointRow struct {
 	DownloadBytes int64  `json:"download_bytes"`
 	Packets       int64  `json:"packets"`
 	ClientCount   int    `json:"client_count"`
+}
+
+type wanRemoteEndpointRow struct {
+	RemoteIP      string `json:"remote_ip"`
+	RemotePort    uint16 `json:"remote_port"`
+	Protocol      string `json:"protocol"`
+	UploadBytes   int64  `json:"upload_bytes"`
+	DownloadBytes int64  `json:"download_bytes"`
+	Packets       int64  `json:"packets"`
 }
 
 type clientSummaryRow struct {
@@ -568,7 +600,7 @@ func buildClientsResponse(from, to time.Time, rows []store.ClientBucketRow) clie
 	return response
 }
 
-func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, clientRows []store.ClientBucketRow, endpointRows []store.EndpointBucketRow) analysisResponse {
+func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, clientRows []store.ClientBucketRow, endpointRows []store.EndpointBucketRow, wanEndpointRows []store.WANEndpointBucketRow) analysisResponse {
 	traffic := buildTrafficResponse(from, to, trafficRows)
 	clients := buildClientsResponse(from, to, clientRows)
 	response := analysisResponse{
@@ -585,9 +617,11 @@ func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, cl
 		TopUploadClients:   topClientsBy(clients.Clients, "upload", 8),
 		TopDownloadClients: topClientsBy(clients.Clients, "download", 8),
 		RemoteEndpoints:    buildRemoteEndpointRows(endpointRows, 20),
+		WANRemoteEndpoints: buildWANRemoteEndpointRows(wanEndpointRows, 20),
 		Limitations: []string{
 			"当前分析基于已落库的时间 bucket 和客户端汇总。",
-			"远端 IP/端口维度来自 LAN 镜像口捕获到的客户端公网流量。",
+			"客户端远端 IP/端口维度来自 LAN 镜像口捕获到的客户端公网流量。",
+			"WAN 远端排行来自 WAN 镜像口，能定位 NAT 后未归属到客户端的公网流量。",
 		},
 	}
 
@@ -651,6 +685,55 @@ func buildRemoteEndpointRows(rows []store.EndpointBucketRow, limit int) []remote
 	for _, acc := range byEndpoint {
 		acc.row.ClientCount = len(acc.clients)
 		result = append(result, acc.row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftTotal := result[i].UploadBytes + result[i].DownloadBytes
+		rightTotal := result[j].UploadBytes + result[j].DownloadBytes
+		if leftTotal != rightTotal {
+			return leftTotal > rightTotal
+		}
+		if result[i].RemoteIP != result[j].RemoteIP {
+			return result[i].RemoteIP < result[j].RemoteIP
+		}
+		if result[i].RemotePort != result[j].RemotePort {
+			return result[i].RemotePort < result[j].RemotePort
+		}
+		return result[i].Protocol < result[j].Protocol
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []wanRemoteEndpointRow {
+	if len(rows) == 0 || limit <= 0 {
+		return []wanRemoteEndpointRow{}
+	}
+	byEndpoint := make(map[string]*wanRemoteEndpointRow)
+	for _, row := range rows {
+		key := row.Key.RemoteIP.String() + "\x00" + strconv.Itoa(int(row.Key.RemotePort)) + "\x00" + row.Key.Protocol
+		acc := byEndpoint[key]
+		if acc == nil {
+			acc = &wanRemoteEndpointRow{
+				RemoteIP:   row.Key.RemoteIP.String(),
+				RemotePort: row.Key.RemotePort,
+				Protocol:   row.Key.Protocol,
+			}
+			byEndpoint[key] = acc
+		}
+		switch row.Key.Direction {
+		case traffic.DirectionUpload:
+			acc.UploadBytes += row.Value.Bytes
+		case traffic.DirectionDownload:
+			acc.DownloadBytes += row.Value.Bytes
+		}
+		acc.Packets += row.Value.Packets
+	}
+
+	result := make([]wanRemoteEndpointRow, 0, len(byEndpoint))
+	for _, row := range byEndpoint {
+		result = append(result, *row)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		leftTotal := result[i].UploadBytes + result[i].DownloadBytes

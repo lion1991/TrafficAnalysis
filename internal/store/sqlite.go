@@ -30,6 +30,11 @@ type EndpointBucketRow struct {
 	Value traffic.BucketValue
 }
 
+type WANEndpointBucketRow struct {
+	Key   traffic.WANEndpointBucketKey
+	Value traffic.BucketValue
+}
+
 type RetentionPolicy struct {
 	MinuteRetention time.Duration
 	HourlyRetention time.Duration
@@ -169,6 +174,39 @@ CREATE TABLE IF NOT EXISTS endpoint_archive_buckets (
 	packets INTEGER NOT NULL,
 	PRIMARY KEY (client_ip, client_mac, remote_ip, remote_port, direction, protocol)
 );
+CREATE TABLE IF NOT EXISTS wan_endpoint_buckets (
+	bucket_start INTEGER NOT NULL,
+	remote_ip TEXT NOT NULL,
+	remote_port INTEGER NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (bucket_start, remote_ip, remote_port, direction, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_wan_endpoint_buckets_start ON wan_endpoint_buckets(bucket_start);
+CREATE INDEX IF NOT EXISTS idx_wan_endpoint_buckets_remote ON wan_endpoint_buckets(remote_ip, bucket_start);
+CREATE TABLE IF NOT EXISTS wan_endpoint_hourly_buckets (
+	bucket_start INTEGER NOT NULL,
+	remote_ip TEXT NOT NULL,
+	remote_port INTEGER NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (bucket_start, remote_ip, remote_port, direction, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_wan_endpoint_hourly_buckets_start ON wan_endpoint_hourly_buckets(bucket_start);
+CREATE INDEX IF NOT EXISTS idx_wan_endpoint_hourly_buckets_remote ON wan_endpoint_hourly_buckets(remote_ip, bucket_start);
+CREATE TABLE IF NOT EXISTS wan_endpoint_archive_buckets (
+	remote_ip TEXT NOT NULL,
+	remote_port INTEGER NOT NULL,
+	direction TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	PRIMARY KEY (remote_ip, remote_port, direction, protocol)
+);
 CREATE TABLE IF NOT EXISTS client_names (
 	client_ip TEXT NOT NULL,
 	client_mac TEXT NOT NULL,
@@ -303,6 +341,48 @@ ON CONFLICT(bucket_start, client_ip, client_mac, remote_ip, remote_port, directi
 			key.Start.UTC().Unix(),
 			key.ClientIP.String(),
 			key.ClientMAC,
+			key.RemoteIP.String(),
+			int(key.RemotePort),
+			string(key.Direction),
+			key.Protocol,
+			value.Bytes,
+			value.Packets,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) UpsertWANEndpointBuckets(ctx context.Context, buckets map[traffic.WANEndpointBucketKey]traffic.BucketValue) error {
+	if len(buckets) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO wan_endpoint_buckets (bucket_start, remote_ip, remote_port, direction, protocol, bytes, packets)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(bucket_start, remote_ip, remote_port, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for key, value := range buckets {
+		_, err := stmt.ExecContext(
+			ctx,
+			key.Start.UTC().Unix(),
 			key.RemoteIP.String(),
 			int(key.RemotePort),
 			string(key.Direction),
@@ -690,6 +770,63 @@ ORDER BY bucket_start ASC, remote_ip ASC, remote_port ASC, client_ip ASC, client
 	return result, nil
 }
 
+func (s *SQLiteStore) QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]WANEndpointBucketRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+WITH combined AS (
+SELECT bucket_start, remote_ip, remote_port, direction, protocol, bytes, packets
+FROM wan_endpoint_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT bucket_start, remote_ip, remote_port, direction, protocol, bytes, packets
+FROM wan_endpoint_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
+SELECT bucket_start, remote_ip, remote_port, direction, protocol, bytes, packets
+FROM combined
+ORDER BY bucket_start ASC, remote_ip ASC, remote_port ASC, direction ASC, protocol ASC;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []WANEndpointBucketRow
+	for rows.Next() {
+		var startUnix int64
+		var remoteIPText string
+		var remotePort int
+		var direction string
+		var protocol string
+		var bytes int64
+		var packets int64
+		if err := rows.Scan(&startUnix, &remoteIPText, &remotePort, &direction, &protocol, &bytes, &packets); err != nil {
+			return nil, err
+		}
+
+		remoteAddr, err := netip.ParseAddr(remoteIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, WANEndpointBucketRow{
+			Key: traffic.WANEndpointBucketKey{
+				Start:      time.Unix(startUnix, 0).UTC(),
+				RemoteIP:   remoteAddr,
+				RemotePort: uint16(remotePort),
+				Direction:  traffic.Direction(direction),
+				Protocol:   protocol,
+			},
+			Value: traffic.BucketValue{
+				Bytes:   bytes,
+				Packets: packets,
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *SQLiteStore) CompactAndPrune(ctx context.Context, now time.Time, policy RetentionPolicy) error {
 	if policy.MinuteRetention <= 0 && policy.HourlyRetention <= 0 {
 		return nil
@@ -749,9 +886,20 @@ ON CONFLICT(bucket_start, client_ip, client_mac, remote_ip, remote_port, directi
 	bytes = bytes + excluded.bytes,
 	packets = packets + excluded.packets;
 `,
+		`
+INSERT INTO wan_endpoint_hourly_buckets (bucket_start, remote_ip, remote_port, direction, protocol, bytes, packets)
+SELECT (bucket_start / 3600) * 3600, remote_ip, remote_port, direction, protocol, SUM(bytes), SUM(packets)
+FROM wan_endpoint_buckets
+WHERE bucket_start < ?
+GROUP BY (bucket_start / 3600) * 3600, remote_ip, remote_port, direction, protocol
+ON CONFLICT(bucket_start, remote_ip, remote_port, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
 		`DELETE FROM traffic_buckets WHERE bucket_start < ?;`,
 		`DELETE FROM client_buckets WHERE bucket_start < ?;`,
 		`DELETE FROM endpoint_buckets WHERE bucket_start < ?;`,
+		`DELETE FROM wan_endpoint_buckets WHERE bucket_start < ?;`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement, cutoffUnix); err != nil {
@@ -793,9 +941,20 @@ ON CONFLICT(client_ip, client_mac, remote_ip, remote_port, direction, protocol) 
 	bytes = bytes + excluded.bytes,
 	packets = packets + excluded.packets;
 `,
+		`
+INSERT INTO wan_endpoint_archive_buckets (remote_ip, remote_port, direction, protocol, bytes, packets)
+SELECT remote_ip, remote_port, direction, protocol, SUM(bytes), SUM(packets)
+FROM wan_endpoint_hourly_buckets
+WHERE bucket_start < ?
+GROUP BY remote_ip, remote_port, direction, protocol
+ON CONFLICT(remote_ip, remote_port, direction, protocol) DO UPDATE SET
+	bytes = bytes + excluded.bytes,
+	packets = packets + excluded.packets;
+`,
 		`DELETE FROM traffic_hourly_buckets WHERE bucket_start < ?;`,
 		`DELETE FROM client_hourly_buckets WHERE bucket_start < ?;`,
 		`DELETE FROM endpoint_hourly_buckets WHERE bucket_start < ?;`,
+		`DELETE FROM wan_endpoint_hourly_buckets WHERE bucket_start < ?;`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement, cutoffUnix); err != nil {

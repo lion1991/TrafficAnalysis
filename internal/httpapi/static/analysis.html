@@ -140,9 +140,9 @@
         </article>
       </section>
 
-      <section class="chartPanel" aria-label="远程 IP 传输排行">
+      <section class="chartPanel" aria-label="客户端远程 IP 传输排行">
         <div class="chartTitle">
-          <h2>远程 IP 传输排行</h2>
+          <h2>客户端远程 IP 排行</h2>
           <p>按远程 IP、端口和协议汇总上传/下载</p>
         </div>
         <div class="tableWrap">
@@ -161,6 +161,31 @@
             </thead>
             <tbody id="remoteEndpointsBody">
               <tr><td colspan="8">暂无数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="chartPanel" aria-label="WAN 远程 IP 传输排行">
+        <div class="chartTitle">
+          <h2>WAN 远端排行</h2>
+          <p>按 WAN 口看到的远程 IP、端口和协议汇总</p>
+        </div>
+        <div class="tableWrap">
+          <table class="remoteTable">
+            <thead>
+              <tr>
+                <th>远程 IP</th>
+                <th>端口</th>
+                <th>协议</th>
+                <th>上传</th>
+                <th>下载</th>
+                <th>总计</th>
+                <th>包</th>
+              </tr>
+            </thead>
+            <tbody id="wanRemoteEndpointsBody">
+              <tr><td colspan="7">暂无数据</td></tr>
             </tbody>
           </table>
         </div>

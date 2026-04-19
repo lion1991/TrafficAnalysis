@@ -200,6 +200,55 @@ func TestSQLiteStoreUpsertsAndQueriesEndpointBuckets(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreUpsertsAndQueriesWANEndpointBuckets(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	remoteIP := netip.MustParseAddr("203.0.113.9")
+	key := traffic.WANEndpointBucketKey{
+		Start:      start,
+		RemoteIP:   remoteIP,
+		RemotePort: 443,
+		Direction:  traffic.DirectionUpload,
+		Protocol:   "udp",
+	}
+
+	err = store.UpsertWANEndpointBuckets(ctx, map[traffic.WANEndpointBucketKey]traffic.BucketValue{
+		key: {Bytes: 4096, Packets: 4},
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	err = store.UpsertWANEndpointBuckets(ctx, map[traffic.WANEndpointBucketKey]traffic.BucketValue{
+		key: {Bytes: 2048, Packets: 2},
+	})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	rows, err := store.QueryWANEndpointBuckets(ctx, start.Add(-time.Minute), start.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("query WAN endpoints: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].Key != key {
+		t.Fatalf("unexpected key: %#v", rows[0].Key)
+	}
+	if rows[0].Value.Bytes != 6144 || rows[0].Value.Packets != 6 {
+		t.Fatalf("unexpected aggregate: %#v", rows[0].Value)
+	}
+}
+
 func TestSQLiteStoreStoresClientNamesAndReturnsThemWithClientBuckets(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "traffic.db")

@@ -17,15 +17,16 @@ import (
 )
 
 type fakeBucketQueryer struct {
-	from         time.Time
-	to           time.Time
-	clientIP     string
-	aliasIP      string
-	aliasMAC     string
-	aliasName    string
-	rows         []store.BucketRow
-	clientRows   []store.ClientBucketRow
-	endpointRows []store.EndpointBucketRow
+	from            time.Time
+	to              time.Time
+	clientIP        string
+	aliasIP         string
+	aliasMAC        string
+	aliasName       string
+	rows            []store.BucketRow
+	clientRows      []store.ClientBucketRow
+	endpointRows    []store.EndpointBucketRow
+	wanEndpointRows []store.WANEndpointBucketRow
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
@@ -45,6 +46,12 @@ func (f *fakeBucketQueryer) QueryEndpointBuckets(ctx context.Context, from, to t
 	f.from = from
 	f.to = to
 	return f.endpointRows, nil
+}
+
+func (f *fakeBucketQueryer) QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.WANEndpointBucketRow, error) {
+	f.from = from
+	f.to = to
+	return f.wanEndpointRows, nil
 }
 
 func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
@@ -330,6 +337,28 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 				Value: traffic.BucketValue{Bytes: 2048, Packets: 2},
 			},
 		},
+		wanEndpointRows: []store.WANEndpointBucketRow{
+			{
+				Key: traffic.WANEndpointBucketKey{
+					Start:      time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					RemoteIP:   trafficMustAddr("198.51.100.8"),
+					RemotePort: 3478,
+					Direction:  traffic.DirectionUpload,
+					Protocol:   "udp",
+				},
+				Value: traffic.BucketValue{Bytes: 8192, Packets: 8},
+			},
+			{
+				Key: traffic.WANEndpointBucketKey{
+					Start:      time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+					RemoteIP:   trafficMustAddr("198.51.100.8"),
+					RemotePort: 3478,
+					Direction:  traffic.DirectionDownload,
+					Protocol:   "udp",
+				},
+				Value: traffic.BucketValue{Bytes: 1024, Packets: 1},
+			},
+		},
 	}
 	handler := NewHandler(queryer, Options{Location: time.UTC})
 
@@ -369,6 +398,14 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 			DownloadBytes int64  `json:"download_bytes"`
 			ClientCount   int    `json:"client_count"`
 		} `json:"remote_endpoints"`
+		WANRemoteEndpoints []struct {
+			RemoteIP      string `json:"remote_ip"`
+			RemotePort    uint16 `json:"remote_port"`
+			Protocol      string `json:"protocol"`
+			UploadBytes   int64  `json:"upload_bytes"`
+			DownloadBytes int64  `json:"download_bytes"`
+			Packets       int64  `json:"packets"`
+		} `json:"wan_remote_endpoints"`
 		Signals []struct {
 			Label string `json:"label"`
 			Level string `json:"level"`
@@ -396,6 +433,12 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 	}
 	if body.RemoteEndpoints[0].RemoteIP != "203.0.113.9" || body.RemoteEndpoints[0].RemotePort != 443 || body.RemoteEndpoints[0].UploadBytes != 4096 || body.RemoteEndpoints[0].DownloadBytes != 2048 || body.RemoteEndpoints[0].ClientCount != 2 {
 		t.Fatalf("unexpected remote endpoint summary: %#v", body.RemoteEndpoints[0])
+	}
+	if len(body.WANRemoteEndpoints) != 1 {
+		t.Fatalf("expected one aggregated WAN remote endpoint, got %#v", body.WANRemoteEndpoints)
+	}
+	if body.WANRemoteEndpoints[0].RemoteIP != "198.51.100.8" || body.WANRemoteEndpoints[0].RemotePort != 3478 || body.WANRemoteEndpoints[0].Protocol != "udp" || body.WANRemoteEndpoints[0].UploadBytes != 8192 || body.WANRemoteEndpoints[0].DownloadBytes != 1024 || body.WANRemoteEndpoints[0].Packets != 9 {
+		t.Fatalf("unexpected WAN remote endpoint summary: %#v", body.WANRemoteEndpoints[0])
 	}
 	if len(body.Signals) == 0 || body.Signals[0].Label == "" || body.Signals[0].Level == "" {
 		t.Fatalf("expected analysis signals, got %#v", body.Signals)

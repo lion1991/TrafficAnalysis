@@ -217,6 +217,9 @@ Data is stored as time buckets in SQLite:
 - `endpoint_buckets`: LAN-client public traffic by bucket, client, remote IP, remote port, direction, and protocol
 - `endpoint_hourly_buckets`: remote endpoint hourly totals compacted from older minute buckets
 - `endpoint_archive_buckets`: all-time remote endpoint totals archived from data older than the hourly retention window
+- `wan_endpoint_buckets`: WAN-side public traffic by bucket, remote IP, remote port, direction, and protocol
+- `wan_endpoint_hourly_buckets`: WAN-side remote endpoint hourly totals compacted from older minute buckets
+- `wan_endpoint_archive_buckets`: all-time WAN-side remote endpoint totals archived from data older than the hourly retention window
 - `client_names`: learned client names keyed by client IP and MAC
 - `client_aliases`: manual display names, keyed by MAC when available so aliases survive DHCP IP changes
 
@@ -266,8 +269,9 @@ Response contains:
 - `totals`: upload/download/lan/other/unknown bytes and packet total
 - `series`: bucketed upload/download/lan/other/unknown values for charting
 - `breakdown`: totals by direction and protocol
+- `/api/analysis` also includes `wan_remote_endpoints`, grouped by WAN-side remote IP, port, and protocol.
 
-`/analysis.html` adds a traffic analysis view over the same stored buckets. It highlights upload share, peak upload bucket, active client count, top upload/download clients, remote IP/port transfer ranking, and the current data limits. Remote IP/port ranking requires `lan_interface` capture because it is derived from LAN-side client traffic before NAT.
+`/analysis.html` adds a traffic analysis view over the same stored buckets. It highlights upload share, peak upload bucket, active client count, top upload/download clients, client remote IP/port transfer ranking, WAN remote IP/port transfer ranking, and the current data limits. Client remote IP/port ranking requires `lan_interface` capture because it is derived from LAN-side client traffic before NAT. WAN remote IP/port ranking is derived from the WAN mirror and can help explain traffic that appears in WAN totals but is not attributable to a LAN client.
 
 `/api/clients` returns:
 

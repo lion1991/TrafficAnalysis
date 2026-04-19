@@ -228,6 +228,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	}
 	classifier := traffic.NewWANClassifierWithLocalNetworks(manager.Current, localNetworks)
 	aggregator := traffic.NewAggregator(cfg.BucketDuration())
+	wanEndpointAggregator := traffic.NewWANEndpointAggregator(cfg.BucketDuration())
 	clientClassifier := traffic.NewLANClientClassifier(localNetworks)
 	clientAggregator := traffic.NewClientAggregator(cfg.BucketDuration())
 	endpointAggregator := traffic.NewEndpointAggregator(cfg.BucketDuration())
@@ -288,6 +289,7 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				return
 			}
 			aggregator.Add(packet, direction)
+			wanEndpointAggregator.Add(packet, direction)
 		})
 	}()
 	if lanRunner != nil {
@@ -339,10 +341,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		select {
 		case <-ctx.Done():
 			cancelRunners()
-			return flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator)
+			return flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator)
 		case err := <-errCh:
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
@@ -351,12 +353,12 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				continue
 			}
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, clientAggregator, endpointAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator); flushErr != nil {
 				return flushErr
 			}
 			return err
 		case <-flushTicker.C:
-			if err := flushCompleteBuckets(ctx, st, aggregator, clientAggregator, endpointAggregator, cfg.BucketDuration()); err != nil {
+			if err := flushCompleteBuckets(ctx, st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, cfg.BucketDuration()); err != nil {
 				return err
 			}
 		case now := <-retentionTicker.C:
@@ -400,9 +402,12 @@ func buildWANIPManager(cfg config.Config) (*wanip.Manager, error) {
 	return wanip.NewManager(wanip.NewChainProvider(providers...), cfg.WANIPRefreshInterval()), nil
 }
 
-func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, bucketDuration time.Duration) error {
+func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, bucketDuration time.Duration) error {
 	cutoff := time.Now().UTC().Truncate(bucketDuration)
 	if err := st.UpsertBuckets(ctx, aggregator.DrainBefore(cutoff)); err != nil {
+		return err
+	}
+	if err := st.UpsertWANEndpointBuckets(ctx, wanEndpointAggregator.DrainBefore(cutoff)); err != nil {
 		return err
 	}
 	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainBefore(cutoff)); err != nil {
@@ -411,8 +416,11 @@ func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator
 	return st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainBefore(cutoff))
 }
 
-func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator) error {
+func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator) error {
 	if err := st.UpsertBuckets(ctx, aggregator.DrainAll()); err != nil {
+		return err
+	}
+	if err := st.UpsertWANEndpointBuckets(ctx, wanEndpointAggregator.DrainAll()); err != nil {
 		return err
 	}
 	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainAll()); err != nil {

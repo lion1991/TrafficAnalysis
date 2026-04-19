@@ -19,6 +19,7 @@ const elements = {
   uploadClientsBody: document.querySelector("#uploadClientsBody"),
   downloadClientsBody: document.querySelector("#downloadClientsBody"),
   remoteEndpointsBody: document.querySelector("#remoteEndpointsBody"),
+  wanRemoteEndpointsBody: document.querySelector("#wanRemoteEndpointsBody"),
   limitationsBody: document.querySelector("#limitationsBody"),
 };
 
@@ -182,6 +183,7 @@ function renderAnalysis(data) {
   renderClientRows(elements.uploadClientsBody, data.top_upload_clients || [], "upload");
   renderClientRows(elements.downloadClientsBody, data.top_download_clients || [], "download");
   renderRemoteEndpoints(data.remote_endpoints || []);
+  renderWANRemoteEndpoints(data.wan_remote_endpoints || []);
   renderLimitations(data.limitations || []);
 }
 
@@ -246,6 +248,29 @@ function renderRemoteEndpoints(remote_endpoints) {
           <td>${formatBytes(row.download_bytes)}</td>
           <td>${formatBytes(total)}</td>
           <td>${Number(row.client_count || 0).toLocaleString()}</td>
+          <td>${Number(row.packets || 0).toLocaleString()}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderWANRemoteEndpoints(remoteEndpoints) {
+  if (remoteEndpoints.length === 0) {
+    elements.wanRemoteEndpointsBody.innerHTML = `<tr><td colspan="7">暂无 WAN 远端数据</td></tr>`;
+    return;
+  }
+  elements.wanRemoteEndpointsBody.innerHTML = remoteEndpoints
+    .map((row) => {
+      const total = Number(row.upload_bytes || 0) + Number(row.download_bytes || 0);
+      return `
+        <tr>
+          <td>${escapeHTML(row.remote_ip || "-")}</td>
+          <td>${row.remote_port ? Number(row.remote_port).toLocaleString() : "-"}</td>
+          <td>${escapeHTML(row.protocol || "-")}</td>
+          <td>${formatBytes(row.upload_bytes)}</td>
+          <td>${formatBytes(row.download_bytes)}</td>
+          <td>${formatBytes(total)}</td>
           <td>${Number(row.packets || 0).toLocaleString()}</td>
         </tr>
       `;

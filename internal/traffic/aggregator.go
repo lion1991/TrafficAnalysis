@@ -31,6 +31,14 @@ type EndpointBucketKey struct {
 	Protocol   string
 }
 
+type WANEndpointBucketKey struct {
+	Start      time.Time
+	RemoteIP   netip.Addr
+	RemotePort uint16
+	Direction  Direction
+	Protocol   string
+}
+
 type BucketValue struct {
 	Bytes   int64
 	Packets int64
@@ -271,6 +279,83 @@ func (a *EndpointAggregator) DrainAll() map[EndpointBucketKey]BucketValue {
 
 	drained := a.buckets
 	a.buckets = make(map[EndpointBucketKey]BucketValue)
+	return drained
+}
+
+type WANEndpointAggregator struct {
+	mu       sync.Mutex
+	interval time.Duration
+	buckets  map[WANEndpointBucketKey]BucketValue
+}
+
+func NewWANEndpointAggregator(interval time.Duration) *WANEndpointAggregator {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return &WANEndpointAggregator{
+		interval: interval,
+		buckets:  make(map[WANEndpointBucketKey]BucketValue),
+	}
+}
+
+func (a *WANEndpointAggregator) Add(packet Packet, direction Direction) {
+	remoteIP, remotePort, ok := remoteEndpoint(packet, direction)
+	if !ok {
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	protocol := packet.Protocol
+	if protocol == "" {
+		protocol = "unknown"
+	}
+
+	key := WANEndpointBucketKey{
+		Start:      packet.Timestamp.Truncate(a.interval).UTC(),
+		RemoteIP:   remoteIP,
+		RemotePort: remotePort,
+		Direction:  direction,
+		Protocol:   protocol,
+	}
+	value := a.buckets[key]
+	value.Bytes += int64(packet.Bytes)
+	value.Packets++
+	a.buckets[key] = value
+}
+
+func (a *WANEndpointAggregator) Snapshot() map[WANEndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	snapshot := make(map[WANEndpointBucketKey]BucketValue, len(a.buckets))
+	for key, value := range a.buckets {
+		snapshot[key] = value
+	}
+	return snapshot
+}
+
+func (a *WANEndpointAggregator) DrainBefore(cutoff time.Time) map[WANEndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := make(map[WANEndpointBucketKey]BucketValue)
+	for key, value := range a.buckets {
+		if key.Start.Before(cutoff) {
+			drained[key] = value
+			delete(a.buckets, key)
+		}
+	}
+	return drained
+}
+
+func (a *WANEndpointAggregator) DrainAll() map[WANEndpointBucketKey]BucketValue {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	drained := a.buckets
+	a.buckets = make(map[WANEndpointBucketKey]BucketValue)
 	return drained
 }
 
