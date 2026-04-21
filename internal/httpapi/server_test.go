@@ -414,6 +414,18 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 			DownloadBytes int64  `json:"download_bytes"`
 			Packets       int64  `json:"packets"`
 		} `json:"wan_udp_remote_endpoints"`
+		WANUDPClientGaps []struct {
+			RemoteIP                  string `json:"remote_ip"`
+			RemotePort                uint16 `json:"remote_port"`
+			Protocol                  string `json:"protocol"`
+			WANUploadBytes            int64  `json:"wan_upload_bytes"`
+			WANDownloadBytes          int64  `json:"wan_download_bytes"`
+			ClientUploadBytes         int64  `json:"client_upload_bytes"`
+			ClientDownloadBytes       int64  `json:"client_download_bytes"`
+			UnattributedUploadBytes   int64  `json:"unattributed_upload_bytes"`
+			UnattributedDownloadBytes int64  `json:"unattributed_download_bytes"`
+			ClientCount               int    `json:"client_count"`
+		} `json:"wan_udp_client_gaps"`
 		Signals []struct {
 			Label string `json:"label"`
 			Level string `json:"level"`
@@ -453,6 +465,12 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 	}
 	if body.WANUDPRemoteEndpoints[0].RemoteIP != "198.51.100.8" || body.WANUDPRemoteEndpoints[0].RemotePort != 3478 || body.WANUDPRemoteEndpoints[0].Protocol != "udp" || body.WANUDPRemoteEndpoints[0].UploadBytes != 8192 || body.WANUDPRemoteEndpoints[0].DownloadBytes != 1024 || body.WANUDPRemoteEndpoints[0].Packets != 9 {
 		t.Fatalf("unexpected WAN UDP remote endpoint summary: %#v", body.WANUDPRemoteEndpoints[0])
+	}
+	if len(body.WANUDPClientGaps) != 1 {
+		t.Fatalf("expected one WAN UDP/client gap row, got %#v", body.WANUDPClientGaps)
+	}
+	if body.WANUDPClientGaps[0].RemoteIP != "198.51.100.8" || body.WANUDPClientGaps[0].RemotePort != 3478 || body.WANUDPClientGaps[0].WANUploadBytes != 8192 || body.WANUDPClientGaps[0].WANDownloadBytes != 1024 || body.WANUDPClientGaps[0].ClientUploadBytes != 0 || body.WANUDPClientGaps[0].ClientDownloadBytes != 0 || body.WANUDPClientGaps[0].UnattributedUploadBytes != 8192 || body.WANUDPClientGaps[0].UnattributedDownloadBytes != 1024 || body.WANUDPClientGaps[0].ClientCount != 0 {
+		t.Fatalf("unexpected WAN UDP/client gap summary: %#v", body.WANUDPClientGaps[0])
 	}
 	if len(body.Signals) == 0 || body.Signals[0].Label == "" || body.Signals[0].Level == "" {
 		t.Fatalf("expected analysis signals, got %#v", body.Signals)
@@ -654,7 +672,7 @@ func TestAnalysisPageIsServedAndFetchesAnalysisAPI(t *testing.T) {
 			t.Fatalf("expected analysis script to contain %q", want)
 		}
 	}
-	for _, want := range []string{"WAN UDP", "wan_udp_remote_endpoints", "wanUDPRemoteEndpointsBody"} {
+	for _, want := range []string{"WAN UDP", "wan_udp_remote_endpoints", "wanUDPRemoteEndpointsBody", "wan_udp_client_gaps", "wanUDPClientGapsBody"} {
 		if !strings.Contains(rec.Body.String()+string(js), want) {
 			t.Fatalf("expected analysis assets to contain %q", want)
 		}

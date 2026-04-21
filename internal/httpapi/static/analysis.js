@@ -21,6 +21,7 @@ const elements = {
   remoteEndpointsBody: document.querySelector("#remoteEndpointsBody"),
   wanRemoteEndpointsBody: document.querySelector("#wanRemoteEndpointsBody"),
   wanUDPRemoteEndpointsBody: document.querySelector("#wanUDPRemoteEndpointsBody"),
+  wanUDPClientGapsBody: document.querySelector("#wanUDPClientGapsBody"),
   limitationsBody: document.querySelector("#limitationsBody"),
 };
 
@@ -190,6 +191,7 @@ function renderAnalysis(data) {
     data.wan_udp_remote_endpoints || [],
     "暂无 WAN UDP 远端数据",
   );
+  renderWANUDPClientGaps(data.wan_udp_client_gaps || []);
   renderLimitations(data.limitations || []);
 }
 
@@ -281,6 +283,29 @@ function renderWANRemoteEndpoints(target, remoteEndpoints, emptyText) {
         </tr>
       `;
     })
+    .join("");
+}
+
+function renderWANUDPClientGaps(rows) {
+  if (rows.length === 0) {
+    elements.wanUDPClientGapsBody.innerHTML = `<tr><td colspan="10">暂无 WAN UDP 对照数据</td></tr>`;
+    return;
+  }
+  elements.wanUDPClientGapsBody.innerHTML = rows
+    .map((row) => `
+      <tr>
+        <td>${escapeHTML(row.remote_ip || "-")}</td>
+        <td>${row.remote_port ? Number(row.remote_port).toLocaleString() : "-"}</td>
+        <td>${escapeHTML(row.protocol || "-")}</td>
+        <td>${formatBytes(row.wan_upload_bytes)}</td>
+        <td>${formatBytes(row.client_upload_bytes)}</td>
+        <td>${formatBytes(row.unattributed_upload_bytes)}</td>
+        <td>${formatBytes(row.wan_download_bytes)}</td>
+        <td>${formatBytes(row.client_download_bytes)}</td>
+        <td>${formatBytes(row.unattributed_download_bytes)}</td>
+        <td>${Number(row.client_count || 0).toLocaleString()}</td>
+      </tr>
+    `)
     .join("");
 }
 

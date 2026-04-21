@@ -389,6 +389,7 @@ type analysisResponse struct {
 	RemoteEndpoints    []remoteEndpointRow    `json:"remote_endpoints"`
 	WANRemoteEndpoints []wanRemoteEndpointRow `json:"wan_remote_endpoints"`
 	WANUDPRemoteEnds   []wanRemoteEndpointRow `json:"wan_udp_remote_endpoints"`
+	WANUDPClientGaps   []wanUDPClientGapRow   `json:"wan_udp_client_gaps"`
 	Signals            []analysisSignal       `json:"signals"`
 	Limitations        []string               `json:"limitations"`
 }
@@ -431,6 +432,19 @@ type wanRemoteEndpointRow struct {
 	UploadBytes   int64  `json:"upload_bytes"`
 	DownloadBytes int64  `json:"download_bytes"`
 	Packets       int64  `json:"packets"`
+}
+
+type wanUDPClientGapRow struct {
+	RemoteIP                  string `json:"remote_ip"`
+	RemotePort                uint16 `json:"remote_port"`
+	Protocol                  string `json:"protocol"`
+	WANUploadBytes            int64  `json:"wan_upload_bytes"`
+	WANDownloadBytes          int64  `json:"wan_download_bytes"`
+	ClientUploadBytes         int64  `json:"client_upload_bytes"`
+	ClientDownloadBytes       int64  `json:"client_download_bytes"`
+	UnattributedUploadBytes   int64  `json:"unattributed_upload_bytes"`
+	UnattributedDownloadBytes int64  `json:"unattributed_download_bytes"`
+	ClientCount               int    `json:"client_count"`
 }
 
 type clientSummaryRow struct {
@@ -620,11 +634,13 @@ func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, cl
 		RemoteEndpoints:    buildRemoteEndpointRows(endpointRows, 20),
 		WANRemoteEndpoints: buildWANRemoteEndpointRows(wanEndpointRows, 20),
 		WANUDPRemoteEnds:   buildWANRemoteEndpointRows(filterWANEndpointRowsByProtocol(wanEndpointRows, "udp"), 20),
+		WANUDPClientGaps:   buildWANUDPClientGapRows(endpointRows, wanEndpointRows, 20),
 		Limitations: []string{
 			"当前分析基于已落库的时间 bucket 和客户端汇总。",
 			"客户端远端 IP/端口维度来自 LAN 镜像口捕获到的客户端公网流量。",
 			"WAN 远端排行来自 WAN 镜像口，能定位 NAT 后未归属到客户端的公网流量。",
 			"WAN UDP 远端排行只展示 UDP，会补足综合排行里被 TCP Top 项挤掉的长期 UDP 观察。",
+			"WAN UDP 对照表按同一远端 IP、端口、协议比较 WAN 与客户端侧统计，用于定位未归属流量。",
 		},
 	}
 
@@ -655,7 +671,19 @@ type remoteEndpointAccumulator struct {
 }
 
 func buildRemoteEndpointRows(rows []store.EndpointBucketRow, limit int) []remoteEndpointRow {
-	if len(rows) == 0 || limit <= 0 {
+	result := aggregateRemoteEndpointRows(rows)
+	if len(result) == 0 || limit <= 0 {
+		return []remoteEndpointRow{}
+	}
+	sortRemoteEndpointRows(result)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func aggregateRemoteEndpointRows(rows []store.EndpointBucketRow) []remoteEndpointRow {
+	if len(rows) == 0 {
 		return []remoteEndpointRow{}
 	}
 	byEndpoint := make(map[string]*remoteEndpointAccumulator)
@@ -689,28 +717,23 @@ func buildRemoteEndpointRows(rows []store.EndpointBucketRow, limit int) []remote
 		acc.row.ClientCount = len(acc.clients)
 		result = append(result, acc.row)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		leftTotal := result[i].UploadBytes + result[i].DownloadBytes
-		rightTotal := result[j].UploadBytes + result[j].DownloadBytes
-		if leftTotal != rightTotal {
-			return leftTotal > rightTotal
-		}
-		if result[i].RemoteIP != result[j].RemoteIP {
-			return result[i].RemoteIP < result[j].RemoteIP
-		}
-		if result[i].RemotePort != result[j].RemotePort {
-			return result[i].RemotePort < result[j].RemotePort
-		}
-		return result[i].Protocol < result[j].Protocol
-	})
+	return result
+}
+
+func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []wanRemoteEndpointRow {
+	result := aggregateWANRemoteEndpointRows(rows)
+	if len(result) == 0 || limit <= 0 {
+		return []wanRemoteEndpointRow{}
+	}
+	sortWANRemoteEndpointRows(result)
 	if len(result) > limit {
 		result = result[:limit]
 	}
 	return result
 }
 
-func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []wanRemoteEndpointRow {
-	if len(rows) == 0 || limit <= 0 {
+func aggregateWANRemoteEndpointRows(rows []store.WANEndpointBucketRow) []wanRemoteEndpointRow {
+	if len(rows) == 0 {
 		return []wanRemoteEndpointRow{}
 	}
 	byEndpoint := make(map[string]*wanRemoteEndpointRow)
@@ -738,11 +761,113 @@ func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []
 	for _, row := range byEndpoint {
 		result = append(result, *row)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		leftTotal := result[i].UploadBytes + result[i].DownloadBytes
-		rightTotal := result[j].UploadBytes + result[j].DownloadBytes
+	return result
+}
+
+func sortRemoteEndpointRows(rows []remoteEndpointRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		leftTotal := rows[i].UploadBytes + rows[i].DownloadBytes
+		rightTotal := rows[j].UploadBytes + rows[j].DownloadBytes
 		if leftTotal != rightTotal {
 			return leftTotal > rightTotal
+		}
+		if rows[i].RemoteIP != rows[j].RemoteIP {
+			return rows[i].RemoteIP < rows[j].RemoteIP
+		}
+		if rows[i].RemotePort != rows[j].RemotePort {
+			return rows[i].RemotePort < rows[j].RemotePort
+		}
+		return rows[i].Protocol < rows[j].Protocol
+	})
+}
+
+func sortWANRemoteEndpointRows(rows []wanRemoteEndpointRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		leftTotal := rows[i].UploadBytes + rows[i].DownloadBytes
+		rightTotal := rows[j].UploadBytes + rows[j].DownloadBytes
+		if leftTotal != rightTotal {
+			return leftTotal > rightTotal
+		}
+		if rows[i].RemoteIP != rows[j].RemoteIP {
+			return rows[i].RemoteIP < rows[j].RemoteIP
+		}
+		if rows[i].RemotePort != rows[j].RemotePort {
+			return rows[i].RemotePort < rows[j].RemotePort
+		}
+		return rows[i].Protocol < rows[j].Protocol
+	})
+}
+
+func filterWANEndpointRowsByProtocol(rows []store.WANEndpointBucketRow, protocol string) []store.WANEndpointBucketRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	filtered := make([]store.WANEndpointBucketRow, 0, len(rows))
+	for _, row := range rows {
+		if row.Key.Protocol == protocol {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterEndpointRowsByProtocol(rows []store.EndpointBucketRow, protocol string) []store.EndpointBucketRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	filtered := make([]store.EndpointBucketRow, 0, len(rows))
+	for _, row := range rows {
+		if row.Key.Protocol == protocol {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func buildWANUDPClientGapRows(endpointRows []store.EndpointBucketRow, wanEndpointRows []store.WANEndpointBucketRow, limit int) []wanUDPClientGapRow {
+	if limit <= 0 {
+		return []wanUDPClientGapRow{}
+	}
+	clientRows := aggregateRemoteEndpointRows(filterEndpointRowsByProtocol(endpointRows, "udp"))
+	wanRows := aggregateWANRemoteEndpointRows(filterWANEndpointRowsByProtocol(wanEndpointRows, "udp"))
+	if len(wanRows) == 0 {
+		return []wanUDPClientGapRow{}
+	}
+
+	clientByKey := make(map[string]remoteEndpointRow, len(clientRows))
+	for _, row := range clientRows {
+		key := row.RemoteIP + "\x00" + strconv.Itoa(int(row.RemotePort)) + "\x00" + row.Protocol
+		clientByKey[key] = row
+	}
+
+	result := make([]wanUDPClientGapRow, 0, len(wanRows))
+	for _, wan := range wanRows {
+		key := wan.RemoteIP + "\x00" + strconv.Itoa(int(wan.RemotePort)) + "\x00" + wan.Protocol
+		client := clientByKey[key]
+		result = append(result, wanUDPClientGapRow{
+			RemoteIP:                  wan.RemoteIP,
+			RemotePort:                wan.RemotePort,
+			Protocol:                  wan.Protocol,
+			WANUploadBytes:            wan.UploadBytes,
+			WANDownloadBytes:          wan.DownloadBytes,
+			ClientUploadBytes:         client.UploadBytes,
+			ClientDownloadBytes:       client.DownloadBytes,
+			UnattributedUploadBytes:   positiveDelta(wan.UploadBytes, client.UploadBytes),
+			UnattributedDownloadBytes: positiveDelta(wan.DownloadBytes, client.DownloadBytes),
+			ClientCount:               client.ClientCount,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		leftGap := result[i].UnattributedUploadBytes + result[i].UnattributedDownloadBytes
+		rightGap := result[j].UnattributedUploadBytes + result[j].UnattributedDownloadBytes
+		if leftGap != rightGap {
+			return leftGap > rightGap
+		}
+		leftWAN := result[i].WANUploadBytes + result[i].WANDownloadBytes
+		rightWAN := result[j].WANUploadBytes + result[j].WANDownloadBytes
+		if leftWAN != rightWAN {
+			return leftWAN > rightWAN
 		}
 		if result[i].RemoteIP != result[j].RemoteIP {
 			return result[i].RemoteIP < result[j].RemoteIP
@@ -758,17 +883,11 @@ func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []
 	return result
 }
 
-func filterWANEndpointRowsByProtocol(rows []store.WANEndpointBucketRow, protocol string) []store.WANEndpointBucketRow {
-	if len(rows) == 0 {
-		return nil
+func positiveDelta(left, right int64) int64 {
+	if left <= right {
+		return 0
 	}
-	filtered := make([]store.WANEndpointBucketRow, 0, len(rows))
-	for _, row := range rows {
-		if row.Key.Protocol == protocol {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
+	return left - right
 }
 
 func topClientsBy(clients []clientSummaryRow, field string, limit int) []clientSummaryRow {
