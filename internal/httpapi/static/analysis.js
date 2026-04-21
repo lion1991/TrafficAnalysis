@@ -20,6 +20,7 @@ const elements = {
   downloadClientsBody: document.querySelector("#downloadClientsBody"),
   remoteEndpointsBody: document.querySelector("#remoteEndpointsBody"),
   wanRemoteEndpointsBody: document.querySelector("#wanRemoteEndpointsBody"),
+  wanUDPRemoteEndpointsBody: document.querySelector("#wanUDPRemoteEndpointsBody"),
   limitationsBody: document.querySelector("#limitationsBody"),
 };
 
@@ -183,7 +184,12 @@ function renderAnalysis(data) {
   renderClientRows(elements.uploadClientsBody, data.top_upload_clients || [], "upload");
   renderClientRows(elements.downloadClientsBody, data.top_download_clients || [], "download");
   renderRemoteEndpoints(data.remote_endpoints || []);
-  renderWANRemoteEndpoints(data.wan_remote_endpoints || []);
+  renderWANRemoteEndpoints(elements.wanRemoteEndpointsBody, data.wan_remote_endpoints || [], "暂无 WAN 远端数据");
+  renderWANRemoteEndpoints(
+    elements.wanUDPRemoteEndpointsBody,
+    data.wan_udp_remote_endpoints || [],
+    "暂无 WAN UDP 远端数据",
+  );
   renderLimitations(data.limitations || []);
 }
 
@@ -255,12 +261,12 @@ function renderRemoteEndpoints(remote_endpoints) {
     .join("");
 }
 
-function renderWANRemoteEndpoints(remoteEndpoints) {
+function renderWANRemoteEndpoints(target, remoteEndpoints, emptyText) {
   if (remoteEndpoints.length === 0) {
-    elements.wanRemoteEndpointsBody.innerHTML = `<tr><td colspan="7">暂无 WAN 远端数据</td></tr>`;
+    target.innerHTML = `<tr><td colspan="7">${escapeHTML(emptyText)}</td></tr>`;
     return;
   }
-  elements.wanRemoteEndpointsBody.innerHTML = remoteEndpoints
+  target.innerHTML = remoteEndpoints
     .map((row) => {
       const total = Number(row.upload_bytes || 0) + Number(row.download_bytes || 0);
       return `

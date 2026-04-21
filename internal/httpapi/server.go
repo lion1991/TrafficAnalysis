@@ -388,6 +388,7 @@ type analysisResponse struct {
 	TopDownloadClients []clientSummaryRow     `json:"top_download_clients"`
 	RemoteEndpoints    []remoteEndpointRow    `json:"remote_endpoints"`
 	WANRemoteEndpoints []wanRemoteEndpointRow `json:"wan_remote_endpoints"`
+	WANUDPRemoteEnds   []wanRemoteEndpointRow `json:"wan_udp_remote_endpoints"`
 	Signals            []analysisSignal       `json:"signals"`
 	Limitations        []string               `json:"limitations"`
 }
@@ -618,10 +619,12 @@ func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, cl
 		TopDownloadClients: topClientsBy(clients.Clients, "download", 8),
 		RemoteEndpoints:    buildRemoteEndpointRows(endpointRows, 20),
 		WANRemoteEndpoints: buildWANRemoteEndpointRows(wanEndpointRows, 20),
+		WANUDPRemoteEnds:   buildWANRemoteEndpointRows(filterWANEndpointRowsByProtocol(wanEndpointRows, "udp"), 20),
 		Limitations: []string{
 			"当前分析基于已落库的时间 bucket 和客户端汇总。",
 			"客户端远端 IP/端口维度来自 LAN 镜像口捕获到的客户端公网流量。",
 			"WAN 远端排行来自 WAN 镜像口，能定位 NAT 后未归属到客户端的公网流量。",
+			"WAN UDP 远端排行只展示 UDP，会补足综合排行里被 TCP Top 项挤掉的长期 UDP 观察。",
 		},
 	}
 
@@ -753,6 +756,19 @@ func buildWANRemoteEndpointRows(rows []store.WANEndpointBucketRow, limit int) []
 		result = result[:limit]
 	}
 	return result
+}
+
+func filterWANEndpointRowsByProtocol(rows []store.WANEndpointBucketRow, protocol string) []store.WANEndpointBucketRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	filtered := make([]store.WANEndpointBucketRow, 0, len(rows))
+	for _, row := range rows {
+		if row.Key.Protocol == protocol {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func topClientsBy(clients []clientSummaryRow, field string, limit int) []clientSummaryRow {

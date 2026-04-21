@@ -406,6 +406,14 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 			DownloadBytes int64  `json:"download_bytes"`
 			Packets       int64  `json:"packets"`
 		} `json:"wan_remote_endpoints"`
+		WANUDPRemoteEndpoints []struct {
+			RemoteIP      string `json:"remote_ip"`
+			RemotePort    uint16 `json:"remote_port"`
+			Protocol      string `json:"protocol"`
+			UploadBytes   int64  `json:"upload_bytes"`
+			DownloadBytes int64  `json:"download_bytes"`
+			Packets       int64  `json:"packets"`
+		} `json:"wan_udp_remote_endpoints"`
 		Signals []struct {
 			Label string `json:"label"`
 			Level string `json:"level"`
@@ -439,6 +447,12 @@ func TestAnalysisAPIReturnsTrafficSignalsAndTopClients(t *testing.T) {
 	}
 	if body.WANRemoteEndpoints[0].RemoteIP != "198.51.100.8" || body.WANRemoteEndpoints[0].RemotePort != 3478 || body.WANRemoteEndpoints[0].Protocol != "udp" || body.WANRemoteEndpoints[0].UploadBytes != 8192 || body.WANRemoteEndpoints[0].DownloadBytes != 1024 || body.WANRemoteEndpoints[0].Packets != 9 {
 		t.Fatalf("unexpected WAN remote endpoint summary: %#v", body.WANRemoteEndpoints[0])
+	}
+	if len(body.WANUDPRemoteEndpoints) != 1 {
+		t.Fatalf("expected one aggregated WAN UDP remote endpoint, got %#v", body.WANUDPRemoteEndpoints)
+	}
+	if body.WANUDPRemoteEndpoints[0].RemoteIP != "198.51.100.8" || body.WANUDPRemoteEndpoints[0].RemotePort != 3478 || body.WANUDPRemoteEndpoints[0].Protocol != "udp" || body.WANUDPRemoteEndpoints[0].UploadBytes != 8192 || body.WANUDPRemoteEndpoints[0].DownloadBytes != 1024 || body.WANUDPRemoteEndpoints[0].Packets != 9 {
+		t.Fatalf("unexpected WAN UDP remote endpoint summary: %#v", body.WANUDPRemoteEndpoints[0])
 	}
 	if len(body.Signals) == 0 || body.Signals[0].Label == "" || body.Signals[0].Level == "" {
 		t.Fatalf("expected analysis signals, got %#v", body.Signals)
@@ -638,6 +652,11 @@ func TestAnalysisPageIsServedAndFetchesAnalysisAPI(t *testing.T) {
 	for _, want := range []string{"/api/analysis", "loadAnalysis", "renderSignals", "top_upload_clients", "remote_endpoints", "renderRemoteEndpoints"} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("expected analysis script to contain %q", want)
+		}
+	}
+	for _, want := range []string{"WAN UDP", "wan_udp_remote_endpoints", "wanUDPRemoteEndpointsBody"} {
+		if !strings.Contains(rec.Body.String()+string(js), want) {
+			t.Fatalf("expected analysis assets to contain %q", want)
 		}
 	}
 }

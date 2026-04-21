@@ -191,6 +191,31 @@
         </div>
       </section>
 
+      <section class="chartPanel" aria-label="WAN UDP 远程 IP 传输排行">
+        <div class="chartTitle">
+          <h2>WAN UDP 远端排行</h2>
+          <p>只看 UDP，避免长期观察时被综合 Top 里的 TCP 项掩盖</p>
+        </div>
+        <div class="tableWrap">
+          <table class="remoteTable">
+            <thead>
+              <tr>
+                <th>远程 IP</th>
+                <th>端口</th>
+                <th>协议</th>
+                <th>上传</th>
+                <th>下载</th>
+                <th>总计</th>
+                <th>包</th>
+              </tr>
+            </thead>
+            <tbody id="wanUDPRemoteEndpointsBody">
+              <tr><td colspan="7">暂无 WAN UDP 远端数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="chartPanel" aria-label="数据边界">
         <div class="chartTitle">
           <h2>数据边界</h2>
