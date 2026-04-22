@@ -660,3 +660,36 @@ func TestSQLiteStoreStoresAndQueriesAnalysisObservationsAndSessions(t *testing.T
 		t.Fatalf("unexpected flow session payload: %#v", sessions[0])
 	}
 }
+
+func TestSQLiteStoreQueryFlowSessionsToleratesHistoricalInvalidIPSentinel(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO flow_sessions (
+	viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
+	first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
+	has_dns_evidence, has_tls_evidence
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`, "wan", "udp", "198.51.100.10", 52000, "203.0.113.9", 3478, "invalid IP", "", start.Unix(), start.Add(10*time.Second).Unix(), 1000, 2000, 3, 0, 0, 0, 0, 0); err != nil {
+		t.Fatalf("insert historical invalid row: %v", err)
+	}
+
+	rows, err := store.QueryFlowSessions(ctx, start.Add(-time.Minute), start.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("query flow sessions: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one flow session, got %#v", rows)
+	}
+	if rows[0].ClientIP.IsValid() {
+		t.Fatalf("expected invalid IP sentinel to decode as zero address, got %#v", rows[0])
+	}
+}

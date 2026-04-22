@@ -176,14 +176,14 @@ async function loadAnalysis() {
   elements.status.style.background = "var(--accent)";
 
   try {
-    const [analysis, objects, reconcile] = await Promise.all([
-      fetchJSON(buildAnalysisURL()),
+    const analysis = await fetchJSON(buildAnalysisURL());
+    const [objectsResult, reconcileResult] = await Promise.allSettled([
       fetchJSON(buildObjectsURL()),
       fetchJSON(buildReconcileURL()),
     ]);
     renderAnalysis(analysis);
-    renderObjects(objects.objects || []);
-    renderReconcile(reconcile.rows || []);
+    renderObjects(objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : []);
+    renderReconcile(reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : []);
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";
   } catch (error) {

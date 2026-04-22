@@ -623,11 +623,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `,
 		string(session.Viewpoint),
 		session.Protocol,
-		session.LocalIP.String(),
+		addrText(session.LocalIP),
 		int(session.LocalPort),
-		session.RemoteIP.String(),
+		addrText(session.RemoteIP),
 		int(session.RemotePort),
-		session.ClientIP.String(),
+		addrText(session.ClientIP),
 		session.ClientMAC,
 		session.FirstSeen.UTC().Unix(),
 		session.LastSeen.UTC().Unix(),
@@ -1359,10 +1359,17 @@ func scanFlowSession(scanner flowSessionScanner) (traffic.FlowSession, error) {
 
 func parseOptionalAddr(value string) (netip.Addr, error) {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || value == "invalid IP" {
 		return netip.Addr{}, nil
 	}
 	return netip.ParseAddr(value)
+}
+
+func addrText(addr netip.Addr) string {
+	if !addr.IsValid() {
+		return ""
+	}
+	return addr.String()
 }
 
 func boolToInt(value bool) int {
