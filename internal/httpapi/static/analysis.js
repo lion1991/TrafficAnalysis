@@ -206,8 +206,6 @@ async function loadAnalysis() {
   abortActiveRequest();
   const requestController = new AbortController();
   activeRequestController = requestController;
-  latestObjects = [];
-  latestReconcile = [];
   elements.status.textContent = "分析中";
   elements.status.style.background = "var(--accent)";
 
@@ -227,8 +225,8 @@ async function loadAnalysis() {
     if (activeRequestController !== requestController) {
       return;
     }
-    latestObjects = objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : [];
-    latestReconcile = reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : [];
+    latestObjects = objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : latestObjects;
+    latestReconcile = reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : latestReconcile;
     renderLoadedRows();
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";

@@ -1375,6 +1375,29 @@ func TestAnalysisPageSortsUsingLoadedRowsWithoutReloading(t *testing.T) {
 	}
 }
 
+func TestAnalysisPageKeepsAuxiliaryTablesVisibleWhileRefreshing(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		`latestObjects = objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : latestObjects;`,
+		`latestReconcile = reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : latestReconcile;`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page to preserve auxiliary rows while refreshing with %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"\n  latestObjects = [];\n",
+		"\n  latestReconcile = [];\n",
+	} {
+		if strings.Contains(string(js), unwanted) {
+			t.Fatalf("expected analysis page to avoid clearing auxiliary rows before refresh with %q", unwanted)
+		}
+	}
+}
+
 func TestAnalysisPageAbortsInFlightFetchesWhenNavigatingAway(t *testing.T) {
 	js, err := embeddedStatic.ReadFile("static/analysis.js")
 	if err != nil {
