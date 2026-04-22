@@ -378,7 +378,13 @@ canvas {
 }
 
 .analysisGrid {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.analysisCard,
+.analysisPanel {
+  min-width: 0;
 }
 
 .grid article {
@@ -387,6 +393,14 @@ canvas {
 
 .tableWrap {
   overflow-x: auto;
+}
+
+.analysisScrollWrap {
+  max-height: 360px;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 table {
