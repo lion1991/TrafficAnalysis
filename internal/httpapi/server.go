@@ -56,6 +56,14 @@ type FlowSessionQueryer interface {
 	QueryFlowSessionByID(ctx context.Context, id int64) (traffic.FlowSession, error)
 }
 
+type ViewpointTLSObservationQueryer interface {
+	QueryTLSObservationsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.TLSObservation, error)
+}
+
+type ViewpointFlowSessionQueryer interface {
+	QueryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error)
+}
+
 type Options struct {
 	Location   *time.Location
 	Now        func() time.Time
@@ -63,17 +71,19 @@ type Options struct {
 }
 
 type server struct {
-	queryer            BucketQueryer
-	clientQueryer      ClientBucketQueryer
-	endpointQueryer    EndpointBucketQueryer
-	wanEndpointQueryer WANEndpointBucketQueryer
-	aliasWriter        ClientAliasWriter
-	dnsQueryer         DNSObservationQueryer
-	tlsQueryer         TLSObservationQueryer
-	flowSessionQueryer FlowSessionQueryer
-	location           *time.Location
-	now                func() time.Time
-	liveSource         LiveSource
+	queryer              BucketQueryer
+	clientQueryer        ClientBucketQueryer
+	endpointQueryer      EndpointBucketQueryer
+	wanEndpointQueryer   WANEndpointBucketQueryer
+	aliasWriter          ClientAliasWriter
+	dnsQueryer           DNSObservationQueryer
+	tlsQueryer           TLSObservationQueryer
+	flowSessionQueryer   FlowSessionQueryer
+	viewpointTLSQueryer  ViewpointTLSObservationQueryer
+	viewpointFlowQueryer ViewpointFlowSessionQueryer
+	location             *time.Location
+	now                  func() time.Time
+	liveSource           LiveSource
 }
 
 func NewHandler(queryer BucketQueryer, options Options) http.Handler {
@@ -87,17 +97,19 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 	}
 
 	srv := server{
-		queryer:            queryer,
-		clientQueryer:      clientBucketQueryer(queryer),
-		endpointQueryer:    endpointBucketQueryer(queryer),
-		wanEndpointQueryer: wanEndpointBucketQueryer(queryer),
-		aliasWriter:        clientAliasWriter(queryer),
-		dnsQueryer:         dnsObservationQueryer(queryer),
-		tlsQueryer:         tlsObservationQueryer(queryer),
-		flowSessionQueryer: flowSessionQueryer(queryer),
-		location:           location,
-		now:                now,
-		liveSource:         options.LiveSource,
+		queryer:              queryer,
+		clientQueryer:        clientBucketQueryer(queryer),
+		endpointQueryer:      endpointBucketQueryer(queryer),
+		wanEndpointQueryer:   wanEndpointBucketQueryer(queryer),
+		aliasWriter:          clientAliasWriter(queryer),
+		dnsQueryer:           dnsObservationQueryer(queryer),
+		tlsQueryer:           tlsObservationQueryer(queryer),
+		flowSessionQueryer:   flowSessionQueryer(queryer),
+		viewpointTLSQueryer:  viewpointTLSObservationQueryer(queryer),
+		viewpointFlowQueryer: viewpointFlowSessionQueryer(queryer),
+		location:             location,
+		now:                  now,
+		liveSource:           options.LiveSource,
 	}
 
 	mux := http.NewServeMux()
@@ -167,6 +179,22 @@ func flowSessionQueryer(queryer BucketQueryer) FlowSessionQueryer {
 		return nil
 	}
 	return sessionQueryer
+}
+
+func viewpointTLSObservationQueryer(queryer BucketQueryer) ViewpointTLSObservationQueryer {
+	filtered, ok := queryer.(ViewpointTLSObservationQueryer)
+	if !ok {
+		return nil
+	}
+	return filtered
+}
+
+func viewpointFlowSessionQueryer(queryer BucketQueryer) ViewpointFlowSessionQueryer {
+	filtered, ok := queryer.(ViewpointFlowSessionQueryer)
+	if !ok {
+		return nil
+	}
+	return filtered
 }
 
 func (s server) handleTraffic(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +379,17 @@ func (s server) handleAnalysisObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessions, dnsRows, tlsRows, err := s.loadAnalysisEvidence(r.Context(), from, to)
+	sessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	dnsRows, err := s.queryDNSObservations(r.Context(), from, to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tlsRows, err := s.queryTLSObservationsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -379,13 +417,18 @@ func (s server) handleAnalysisReconcile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sessions, _, _, err := s.loadAnalysisEvidence(r.Context(), from, to)
+	wanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	lanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	response := buildReconcileResponse(from, to, sessions)
+	response := buildReconcileResponse(from, to, wanSessions, lanSessions)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -450,6 +493,62 @@ func (s server) loadAnalysisEvidence(ctx context.Context, from, to time.Time) ([
 		}
 	}
 	return sessions, dnsRows, tlsRows, nil
+}
+
+func (s server) queryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
+	if s.dnsQueryer == nil {
+		return nil, nil
+	}
+	rows, err := s.dnsQueryer.QueryDNSObservations(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query dns observations")
+	}
+	return rows, nil
+}
+
+func (s server) queryTLSObservationsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.TLSObservation, error) {
+	if s.viewpointTLSQueryer != nil {
+		rows, err := s.viewpointTLSQueryer.QueryTLSObservationsByViewpoint(ctx, from, to, viewpoint)
+		if err != nil {
+			return nil, fmt.Errorf("query tls observations")
+		}
+		return rows, nil
+	}
+	if s.tlsQueryer == nil {
+		return nil, nil
+	}
+	rows, err := s.tlsQueryer.QueryTLSObservations(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query tls observations")
+	}
+	filtered := make([]traffic.TLSObservation, 0, len(rows))
+	for _, row := range rows {
+		if row.Viewpoint == viewpoint {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
+}
+
+func (s server) queryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
+	if s.viewpointFlowQueryer != nil {
+		rows, err := s.viewpointFlowQueryer.QueryFlowSessionsByViewpoint(ctx, from, to, viewpoint)
+		if err != nil {
+			return nil, fmt.Errorf("query flow sessions")
+		}
+		return rows, nil
+	}
+	rows, err := s.flowSessionQueryer.QueryFlowSessions(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query flow sessions")
+	}
+	filtered := make([]traffic.FlowSession, 0, len(rows))
+	for _, row := range rows {
+		if row.Viewpoint == viewpoint {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
 }
 
 func (s server) handleClientAlias(w http.ResponseWriter, r *http.Request) {
@@ -1267,12 +1366,10 @@ func buildObjectsResponse(from, to time.Time, sessions []traffic.FlowSession, dn
 		clients map[string]struct{}
 	}
 
+	index := newEvidenceIndex(dnsRows, tlsRows)
 	byObject := make(map[string]*accumulator)
 	for _, session := range sessions {
-		if session.Viewpoint != traffic.ViewpointLAN {
-			continue
-		}
-		label, source, confidence := attributeSession(session, dnsRows, tlsRows)
+		label, source, confidence := attributeSessionWithIndex(session, index)
 		key := label + "\x00" + source + "\x00" + session.Protocol
 		acc := byObject[key]
 		if acc == nil {
@@ -1314,13 +1411,13 @@ func buildObjectsResponse(from, to time.Time, sessions []traffic.FlowSession, dn
 	return response
 }
 
-func buildReconcileResponse(from, to time.Time, sessions []traffic.FlowSession) reconcileResponse {
+func buildReconcileResponse(from, to time.Time, wanSessions []traffic.FlowSession, lanSessions []traffic.FlowSession) reconcileResponse {
 	return reconcileResponse{
 		Range: responseRange{
 			From: from.UTC().Format(time.RFC3339),
 			To:   to.UTC().Format(time.RFC3339),
 		},
-		Rows: buildReconcileRows(sessions),
+		Rows: buildReconcileRowsFromSets(wanSessions, lanSessions),
 	}
 }
 
@@ -1335,6 +1432,58 @@ func buildReconcileRows(sessions []traffic.FlowSession) []reconcileRow {
 			lanSessions = append(lanSessions, session)
 		}
 	}
+	sort.Slice(wanSessions, func(i, j int) bool {
+		if !wanSessions[i].FirstSeen.Equal(wanSessions[j].FirstSeen) {
+			return wanSessions[i].FirstSeen.Before(wanSessions[j].FirstSeen)
+		}
+		return wanSessions[i].ID < wanSessions[j].ID
+	})
+
+	usedLAN := make(map[int64]struct{})
+	rows := make([]reconcileRow, 0, len(wanSessions))
+	for _, wan := range wanSessions {
+		best, ok := findBestLANMatch(wan, lanSessions, usedLAN)
+		row := reconcileRow{
+			WANSessionID: wan.ID,
+			RemoteIP:     wan.RemoteIP.String(),
+			RemotePort:   wan.RemotePort,
+			Protocol:     wan.Protocol,
+		}
+		if !ok {
+			row.Status = "unmatched"
+			row.Reason = "no_lan_candidate"
+			row.Confidence = 0.2
+			row.UnattributedUploadBytes = wan.UploadBytes
+			row.UnattributedDownloadBytes = wan.DownloadBytes
+			rows = append(rows, row)
+			continue
+		}
+
+		usedLAN[best.ID] = struct{}{}
+		row.LANSessionID = best.ID
+		row.UnattributedUploadBytes = positiveDelta(wan.UploadBytes, best.UploadBytes)
+		row.UnattributedDownloadBytes = positiveDelta(wan.DownloadBytes, best.DownloadBytes)
+		row.Confidence = matchConfidence(wan, best)
+
+		totalGap := row.UnattributedUploadBytes + row.UnattributedDownloadBytes
+		wanTotal := wan.UploadBytes + wan.DownloadBytes
+		threshold := wanTotal / 5
+		if threshold < 1024 {
+			threshold = 1024
+		}
+		if totalGap <= threshold {
+			row.Status = "matched"
+			row.Reason = "remote_time_overlap"
+		} else {
+			row.Status = "partial"
+			row.Reason = "byte_gap"
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func buildReconcileRowsFromSets(wanSessions []traffic.FlowSession, lanSessions []traffic.FlowSession) []reconcileRow {
 	sort.Slice(wanSessions, func(i, j int) bool {
 		if !wanSessions[i].FirstSeen.Equal(wanSessions[j].FirstSeen) {
 			return wanSessions[i].FirstSeen.Before(wanSessions[j].FirstSeen)
@@ -1421,25 +1570,56 @@ func buildSessionResponse(session traffic.FlowSession, label, source string, con
 }
 
 func attributeSession(session traffic.FlowSession, dnsRows []traffic.DNSObservation, tlsRows []traffic.TLSObservation) (string, string, float64) {
-	if observation, ok := findBestTLSObservation(session, tlsRows); ok {
+	return attributeSessionWithIndex(session, newEvidenceIndex(dnsRows, tlsRows))
+}
+
+type evidenceIndex struct {
+	dnsByClientRemote map[string][]traffic.DNSObservation
+	tlsByClientRemote map[string][]traffic.TLSObservation
+}
+
+func newEvidenceIndex(dnsRows []traffic.DNSObservation, tlsRows []traffic.TLSObservation) evidenceIndex {
+	index := evidenceIndex{
+		dnsByClientRemote: make(map[string][]traffic.DNSObservation),
+		tlsByClientRemote: make(map[string][]traffic.TLSObservation),
+	}
+	for _, row := range dnsRows {
+		key := evidenceDNSKey(row.ClientIP, row.AnswerIP)
+		index.dnsByClientRemote[key] = append(index.dnsByClientRemote[key], row)
+	}
+	for _, row := range tlsRows {
+		key := evidenceTLSKey(row.ClientIP, row.RemoteIP, row.RemotePort, row.Protocol)
+		index.tlsByClientRemote[key] = append(index.tlsByClientRemote[key], row)
+	}
+	return index
+}
+
+func attributeSessionWithIndex(session traffic.FlowSession, index evidenceIndex) (string, string, float64) {
+	if observation, ok := findBestTLSObservationWithIndex(session, index); ok {
 		return observation.ServerName, "tls_sni", 0.95
 	}
-	if observation, ok := findBestDNSObservation(session, dnsRows); ok {
+	if observation, ok := findBestDNSObservationWithIndex(session, index); ok {
 		return observation.Name, "dns_answer", 0.75
 	}
 	return remoteLabel(session.RemoteIP, session.RemotePort), "remote_endpoint", 0.3
 }
 
+func evidenceDNSKey(clientIP, remoteIP netip.Addr) string {
+	return clientIP.String() + "\x00" + remoteIP.String()
+}
+
+func evidenceTLSKey(clientIP, remoteIP netip.Addr, remotePort uint16, protocol string) string {
+	return clientIP.String() + "\x00" + remoteIP.String() + "\x00" + strconv.Itoa(int(remotePort)) + "\x00" + protocol
+}
+
 func findBestTLSObservation(session traffic.FlowSession, observations []traffic.TLSObservation) (traffic.TLSObservation, bool) {
+	return findBestTLSObservationWithIndex(session, newEvidenceIndex(nil, observations))
+}
+
+func findBestTLSObservationWithIndex(session traffic.FlowSession, index evidenceIndex) (traffic.TLSObservation, bool) {
 	var best traffic.TLSObservation
 	bestFound := false
-	for _, observation := range observations {
-		if observation.RemoteIP != session.RemoteIP || observation.RemotePort != session.RemotePort || observation.Protocol != session.Protocol {
-			continue
-		}
-		if session.ClientIP.IsValid() && observation.ClientIP.IsValid() && observation.ClientIP != session.ClientIP {
-			continue
-		}
+	for _, observation := range index.tlsByClientRemote[evidenceTLSKey(session.ClientIP, session.RemoteIP, session.RemotePort, session.Protocol)] {
 		if observation.ObservedAt.Before(session.FirstSeen.Add(-2*time.Minute)) || observation.ObservedAt.After(session.LastSeen.Add(2*time.Minute)) {
 			continue
 		}
@@ -1452,15 +1632,13 @@ func findBestTLSObservation(session traffic.FlowSession, observations []traffic.
 }
 
 func findBestDNSObservation(session traffic.FlowSession, observations []traffic.DNSObservation) (traffic.DNSObservation, bool) {
+	return findBestDNSObservationWithIndex(session, newEvidenceIndex(observations, nil))
+}
+
+func findBestDNSObservationWithIndex(session traffic.FlowSession, index evidenceIndex) (traffic.DNSObservation, bool) {
 	var best traffic.DNSObservation
 	bestFound := false
-	for _, observation := range observations {
-		if observation.AnswerIP != session.RemoteIP {
-			continue
-		}
-		if session.ClientIP.IsValid() && observation.ClientIP.IsValid() && observation.ClientIP != session.ClientIP {
-			continue
-		}
+	for _, observation := range index.dnsByClientRemote[evidenceDNSKey(session.ClientIP, session.RemoteIP)] {
 		if observation.ObservedAt.Before(session.FirstSeen.Add(-10*time.Minute)) || observation.ObservedAt.After(session.LastSeen.Add(1*time.Minute)) {
 			continue
 		}

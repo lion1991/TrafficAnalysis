@@ -1116,3 +1116,20 @@ func TestAnalysisPageSupportsPerTableColumnSorting(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalysisPageRendersBaseResultsBeforeAuxiliaryTables(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		"const analysis = await fetchJSON(buildAnalysisURL());",
+		"renderAnalysis(analysis);",
+		"const [objectsResult, reconcileResult] = await Promise.allSettled([",
+		`elements.status.textContent = "基础结果已更新";`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page to render base results before slower auxiliary fetches with %q", want)
+		}
+	}
+}

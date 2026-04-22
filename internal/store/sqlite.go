@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS tls_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_tls_observations_time ON tls_observations(observed_at);
 CREATE INDEX IF NOT EXISTS idx_tls_observations_remote ON tls_observations(remote_ip, remote_port, observed_at);
+CREATE INDEX IF NOT EXISTS idx_tls_observations_viewpoint_time ON tls_observations(viewpoint, observed_at);
 CREATE TABLE IF NOT EXISTS flow_sessions (
 	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 	viewpoint TEXT NOT NULL,
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS flow_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_flow_sessions_time ON flow_sessions(first_seen, last_seen);
 CREATE INDEX IF NOT EXISTS idx_flow_sessions_remote ON flow_sessions(remote_ip, remote_port, protocol, first_seen);
+CREATE INDEX IF NOT EXISTS idx_flow_sessions_viewpoint_time ON flow_sessions(viewpoint, first_seen, last_seen);
 `)
 	return err
 }
@@ -1058,12 +1060,27 @@ ORDER BY observed_at ASC, name ASC;
 }
 
 func (s *SQLiteStore) QueryTLSObservations(ctx context.Context, from, to time.Time) ([]traffic.TLSObservation, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryTLSObservations(ctx, from, to, "")
+}
+
+func (s *SQLiteStore) QueryTLSObservationsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.TLSObservation, error) {
+	return s.queryTLSObservations(ctx, from, to, viewpoint)
+}
+
+func (s *SQLiteStore) queryTLSObservations(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.TLSObservation, error) {
+	query := `
 SELECT observed_at, viewpoint, client_ip, client_mac, remote_ip, remote_port, server_name, alpn, protocol, source
 FROM tls_observations
-WHERE observed_at >= ? AND observed_at < ?
+WHERE observed_at >= ? AND observed_at < ?`
+	args := []any{from.UTC().Unix(), to.UTC().Unix()}
+	if viewpoint != "" {
+		query += ` AND viewpoint = ?`
+		args = append(args, string(viewpoint))
+	}
+	query += `
 ORDER BY observed_at ASC, remote_ip ASC, remote_port ASC;
-`, from.UTC().Unix(), to.UTC().Unix())
+`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1112,14 +1129,29 @@ ORDER BY observed_at ASC, remote_ip ASC, remote_port ASC;
 }
 
 func (s *SQLiteStore) QueryFlowSessions(ctx context.Context, from, to time.Time) ([]traffic.FlowSession, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.queryFlowSessions(ctx, from, to, "")
+}
+
+func (s *SQLiteStore) QueryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
+	return s.queryFlowSessions(ctx, from, to, viewpoint)
+}
+
+func (s *SQLiteStore) queryFlowSessions(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
+	query := `
 SELECT id, viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
        first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
        has_dns_evidence, has_tls_evidence
 FROM flow_sessions
-WHERE last_seen >= ? AND first_seen < ?
+WHERE last_seen >= ? AND first_seen < ?`
+	args := []any{from.UTC().Unix(), to.UTC().Unix()}
+	if viewpoint != "" {
+		query += ` AND viewpoint = ?`
+		args = append(args, string(viewpoint))
+	}
+	query += `
 ORDER BY first_seen ASC, id ASC;
-`, from.UTC().Unix(), to.UTC().Unix())
+`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -191,11 +191,13 @@ async function loadAnalysis() {
 
   try {
     const analysis = await fetchJSON(buildAnalysisURL());
+    renderAnalysis(analysis);
+    elements.status.textContent = "基础结果已更新";
+    elements.status.style.background = "#dfe9b1";
     const [objectsResult, reconcileResult] = await Promise.allSettled([
       fetchJSON(buildObjectsURL()),
       fetchJSON(buildReconcileURL()),
     ]);
-    renderAnalysis(analysis);
     renderObjects(objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : []);
     renderReconcile(reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : []);
     elements.status.textContent = "已更新";

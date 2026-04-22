@@ -693,3 +693,66 @@ INSERT INTO flow_sessions (
 		t.Fatalf("expected invalid IP sentinel to decode as zero address, got %#v", rows[0])
 	}
 }
+
+func TestSQLiteStoreCanQueryFlowSessionsByViewpoint(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	for _, session := range []traffic.FlowSession{
+		{
+			Viewpoint:     traffic.ViewpointLAN,
+			Protocol:      "tcp",
+			LocalIP:       netip.MustParseAddr("192.168.248.22"),
+			LocalPort:     53000,
+			RemoteIP:      netip.MustParseAddr("203.0.113.9"),
+			RemotePort:    443,
+			ClientIP:      netip.MustParseAddr("192.168.248.22"),
+			ClientMAC:     "00:11:22:33:44:55",
+			FirstSeen:     start,
+			LastSeen:      start.Add(10 * time.Second),
+			UploadBytes:   1000,
+			DownloadBytes: 2000,
+			Packets:       3,
+		},
+		{
+			Viewpoint:     traffic.ViewpointWAN,
+			Protocol:      "tcp",
+			LocalIP:       netip.MustParseAddr("198.51.100.10"),
+			LocalPort:     53000,
+			RemoteIP:      netip.MustParseAddr("203.0.113.9"),
+			RemotePort:    443,
+			FirstSeen:     start,
+			LastSeen:      start.Add(10 * time.Second),
+			UploadBytes:   1200,
+			DownloadBytes: 2200,
+			Packets:       4,
+		},
+	} {
+		if _, err := store.InsertFlowSession(ctx, session); err != nil {
+			t.Fatalf("insert flow session: %v", err)
+		}
+	}
+
+	lanRows, err := store.QueryFlowSessionsByViewpoint(ctx, start.Add(-time.Minute), start.Add(time.Minute), traffic.ViewpointLAN)
+	if err != nil {
+		t.Fatalf("query lan flow sessions: %v", err)
+	}
+	if len(lanRows) != 1 || lanRows[0].Viewpoint != traffic.ViewpointLAN {
+		t.Fatalf("expected only LAN rows, got %#v", lanRows)
+	}
+
+	wanRows, err := store.QueryFlowSessionsByViewpoint(ctx, start.Add(-time.Minute), start.Add(time.Minute), traffic.ViewpointWAN)
+	if err != nil {
+		t.Fatalf("query wan flow sessions: %v", err)
+	}
+	if len(wanRows) != 1 || wanRows[0].Viewpoint != traffic.ViewpointWAN {
+		t.Fatalf("expected only WAN rows, got %#v", wanRows)
+	}
+}
