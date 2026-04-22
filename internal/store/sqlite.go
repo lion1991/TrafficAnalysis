@@ -35,6 +35,75 @@ type WANEndpointBucketRow struct {
 	Value traffic.BucketValue
 }
 
+type AnalysisOverview struct {
+	Totals             AnalysisOverviewTotals
+	Clients            []AnalysisClientSummary
+	RemoteEndpoints    []AnalysisEndpointSummary
+	WANRemoteEndpoints []AnalysisWANEndpointSummary
+	WANUDPRemoteEnds   []AnalysisWANEndpointSummary
+	WANUDPClientGaps   []AnalysisWANUDPClientGapSummary
+}
+
+type AnalysisOverviewTotals struct {
+	UploadBytes      int64
+	DownloadBytes    int64
+	LANBytes         int64
+	OtherBytes       int64
+	UnknownBytes     int64
+	Packets          int64
+	PeakUploadBytes  int64
+	PeakUploadBucket time.Time
+}
+
+type AnalysisClientSummary struct {
+	Alias         string
+	Name          string
+	NameSource    string
+	ClientIP      netip.Addr
+	ClientMAC     string
+	UploadBytes   int64
+	DownloadBytes int64
+	Packets       int64
+}
+
+type AnalysisEndpointSummary struct {
+	RemoteIP      netip.Addr
+	RemotePort    uint16
+	Protocol      string
+	UploadBytes   int64
+	DownloadBytes int64
+	Packets       int64
+	ClientCount   int
+}
+
+type AnalysisWANEndpointSummary struct {
+	RemoteIP      netip.Addr
+	RemotePort    uint16
+	Protocol      string
+	UploadBytes   int64
+	DownloadBytes int64
+	Packets       int64
+}
+
+type AnalysisWANUDPClientGapSummary struct {
+	RemoteIP                  netip.Addr
+	RemotePort                uint16
+	Protocol                  string
+	WANUploadBytes            int64
+	WANDownloadBytes          int64
+	ClientUploadBytes         int64
+	ClientDownloadBytes       int64
+	UnattributedUploadBytes   int64
+	UnattributedDownloadBytes int64
+	ClientCount               int
+}
+
+type FlowSessionMatchKey struct {
+	RemoteIP   netip.Addr
+	RemotePort uint16
+	Protocol   string
+}
+
 type RetentionPolicy struct {
 	MinuteRetention time.Duration
 	HourlyRetention time.Duration
@@ -1009,6 +1078,406 @@ ORDER BY bucket_start ASC, remote_ip ASC, remote_port ASC, direction ASC, protoc
 	return result, nil
 }
 
+func (s *SQLiteStore) QueryAnalysisOverview(ctx context.Context, from, to time.Time, topClientLimit, topEndpointLimit int) (AnalysisOverview, error) {
+	_ = topClientLimit
+
+	overview := AnalysisOverview{
+		Clients:            []AnalysisClientSummary{},
+		RemoteEndpoints:    []AnalysisEndpointSummary{},
+		WANRemoteEndpoints: []AnalysisWANEndpointSummary{},
+		WANUDPRemoteEnds:   []AnalysisWANEndpointSummary{},
+		WANUDPClientGaps:   []AnalysisWANUDPClientGapSummary{},
+	}
+
+	if err := s.db.QueryRowContext(ctx, `
+WITH combined AS (
+SELECT direction, bytes, packets
+FROM traffic_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT direction, bytes, packets
+FROM traffic_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
+SELECT
+	COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN direction = 'lan' THEN bytes ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN direction = 'other' THEN bytes ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN direction = 'unknown' THEN bytes ELSE 0 END), 0),
+	COALESCE(SUM(packets), 0)
+FROM combined;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix()).Scan(
+		&overview.Totals.UploadBytes,
+		&overview.Totals.DownloadBytes,
+		&overview.Totals.LANBytes,
+		&overview.Totals.OtherBytes,
+		&overview.Totals.UnknownBytes,
+		&overview.Totals.Packets,
+	); err != nil {
+		return overview, err
+	}
+
+	var peakBucket sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `
+WITH combined AS (
+SELECT bucket_start, bytes
+FROM traffic_buckets
+WHERE bucket_start >= ? AND bucket_start < ? AND direction = 'upload'
+UNION ALL
+SELECT bucket_start, bytes
+FROM traffic_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ? AND direction = 'upload'
+)
+SELECT bucket_start, SUM(bytes) AS upload_bytes
+FROM combined
+GROUP BY bucket_start
+ORDER BY upload_bytes DESC, bucket_start ASC
+LIMIT 1;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix()).Scan(&peakBucket, &overview.Totals.PeakUploadBytes); err != nil {
+		if err != sql.ErrNoRows {
+			return overview, err
+		}
+	} else if peakBucket.Valid {
+		overview.Totals.PeakUploadBucket = time.Unix(peakBucket.Int64, 0).UTC()
+	}
+
+	clients, err := s.queryAnalysisClients(ctx, from, to)
+	if err != nil {
+		return overview, err
+	}
+	overview.Clients = clients
+
+	if topEndpointLimit > 0 {
+		overview.RemoteEndpoints, err = s.queryAnalysisEndpointSummaries(ctx, from, to, topEndpointLimit)
+		if err != nil {
+			return overview, err
+		}
+		overview.WANRemoteEndpoints, err = s.queryAnalysisWANEndpointSummaries(ctx, from, to, "", topEndpointLimit)
+		if err != nil {
+			return overview, err
+		}
+		overview.WANUDPRemoteEnds, err = s.queryAnalysisWANEndpointSummaries(ctx, from, to, "udp", topEndpointLimit)
+		if err != nil {
+			return overview, err
+		}
+		overview.WANUDPClientGaps, err = s.queryAnalysisWANUDPClientGaps(ctx, from, to, topEndpointLimit)
+		if err != nil {
+			return overview, err
+		}
+	}
+
+	return overview, nil
+}
+
+func (s *SQLiteStore) queryAnalysisClients(ctx context.Context, from, to time.Time) ([]AnalysisClientSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+WITH combined AS (
+SELECT client_ip, client_mac, direction, bytes, packets
+FROM client_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT client_ip, client_mac, direction, bytes, packets
+FROM client_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+),
+aggregated AS (
+SELECT client_ip, client_mac,
+       COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0) AS upload_bytes,
+       COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0) AS download_bytes,
+       COALESCE(SUM(packets), 0) AS packets
+FROM combined
+GROUP BY client_ip, client_mac
+)
+SELECT a.client_ip, a.client_mac, a.upload_bytes, a.download_bytes, a.packets,
+       COALESCE((
+          SELECT alias
+          FROM (
+             SELECT ca.alias, ca.updated_at,
+                    CASE
+                       WHEN a.client_mac != '' AND ca.client_key = a.client_mac THEN 0
+                       WHEN a.client_mac != '' AND ca.client_mac = a.client_mac THEN 1
+                       WHEN ca.client_ip = a.client_ip THEN 2
+                       ELSE 3
+                    END AS alias_priority
+             FROM client_aliases ca
+             WHERE (a.client_mac != '' AND (ca.client_key = a.client_mac OR ca.client_mac = a.client_mac))
+                OR ca.client_ip = a.client_ip
+          )
+          ORDER BY alias_priority ASC, updated_at DESC
+          LIMIT 1
+       ), ''),
+       COALESCE(cn.name, ''), COALESCE(cn.source, '')
+FROM aggregated a
+LEFT JOIN client_names cn ON cn.client_ip = a.client_ip AND cn.client_mac = a.client_mac
+ORDER BY (a.upload_bytes + a.download_bytes) DESC, a.client_ip ASC, a.client_mac ASC;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AnalysisClientSummary
+	for rows.Next() {
+		var clientIPText string
+		var clientMAC string
+		var uploadBytes int64
+		var downloadBytes int64
+		var packets int64
+		var alias string
+		var name string
+		var nameSource string
+		if err := rows.Scan(&clientIPText, &clientMAC, &uploadBytes, &downloadBytes, &packets, &alias, &name, &nameSource); err != nil {
+			return nil, err
+		}
+		clientIP, err := netip.ParseAddr(clientIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, AnalysisClientSummary{
+			Alias:         alias,
+			Name:          name,
+			NameSource:    nameSource,
+			ClientIP:      clientIP,
+			ClientMAC:     clientMAC,
+			UploadBytes:   uploadBytes,
+			DownloadBytes: downloadBytes,
+			Packets:       packets,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) queryAnalysisEndpointSummaries(ctx context.Context, from, to time.Time, limit int) ([]AnalysisEndpointSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+WITH combined AS (
+SELECT client_ip, client_mac, remote_ip, remote_port, direction, protocol, bytes, packets
+FROM endpoint_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT client_ip, client_mac, remote_ip, remote_port, direction, protocol, bytes, packets
+FROM endpoint_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
+SELECT remote_ip, remote_port, protocol,
+       COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0) AS upload_bytes,
+       COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0) AS download_bytes,
+       COALESCE(SUM(packets), 0) AS packets,
+       COUNT(DISTINCT client_ip || char(0) || client_mac) AS client_count
+FROM combined
+GROUP BY remote_ip, remote_port, protocol
+ORDER BY (upload_bytes + download_bytes) DESC, remote_ip ASC, remote_port ASC, protocol ASC
+LIMIT ?;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AnalysisEndpointSummary
+	for rows.Next() {
+		var remoteIPText string
+		var remotePort int
+		var protocol string
+		var uploadBytes int64
+		var downloadBytes int64
+		var packets int64
+		var clientCount int
+		if err := rows.Scan(&remoteIPText, &remotePort, &protocol, &uploadBytes, &downloadBytes, &packets, &clientCount); err != nil {
+			return nil, err
+		}
+		remoteIP, err := netip.ParseAddr(remoteIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, AnalysisEndpointSummary{
+			RemoteIP:      remoteIP,
+			RemotePort:    uint16(remotePort),
+			Protocol:      protocol,
+			UploadBytes:   uploadBytes,
+			DownloadBytes: downloadBytes,
+			Packets:       packets,
+			ClientCount:   clientCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) queryAnalysisWANEndpointSummaries(ctx context.Context, from, to time.Time, protocol string, limit int) ([]AnalysisWANEndpointSummary, error) {
+	query := `
+WITH combined AS (
+SELECT remote_ip, remote_port, direction, protocol, bytes, packets
+FROM wan_endpoint_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+UNION ALL
+SELECT remote_ip, remote_port, direction, protocol, bytes, packets
+FROM wan_endpoint_hourly_buckets
+WHERE bucket_start >= ? AND bucket_start < ?
+)
+SELECT remote_ip, remote_port, protocol,
+       COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0) AS upload_bytes,
+       COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0) AS download_bytes,
+       COALESCE(SUM(packets), 0) AS packets
+FROM combined
+`
+	args := []any{from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix()}
+	if strings.TrimSpace(protocol) != "" {
+		query += `WHERE protocol = ?` + "\n"
+		args = append(args, protocol)
+	}
+	query += `GROUP BY remote_ip, remote_port, protocol
+ORDER BY (upload_bytes + download_bytes) DESC, remote_ip ASC, remote_port ASC, protocol ASC
+LIMIT ?;
+`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AnalysisWANEndpointSummary
+	for rows.Next() {
+		var remoteIPText string
+		var remotePort int
+		var rowProtocol string
+		var uploadBytes int64
+		var downloadBytes int64
+		var packets int64
+		if err := rows.Scan(&remoteIPText, &remotePort, &rowProtocol, &uploadBytes, &downloadBytes, &packets); err != nil {
+			return nil, err
+		}
+		remoteIP, err := netip.ParseAddr(remoteIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, AnalysisWANEndpointSummary{
+			RemoteIP:      remoteIP,
+			RemotePort:    uint16(remotePort),
+			Protocol:      rowProtocol,
+			UploadBytes:   uploadBytes,
+			DownloadBytes: downloadBytes,
+			Packets:       packets,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) queryAnalysisWANUDPClientGaps(ctx context.Context, from, to time.Time, limit int) ([]AnalysisWANUDPClientGapSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+WITH client_udp AS (
+SELECT remote_ip, remote_port, protocol,
+       COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0) AS client_upload_bytes,
+       COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0) AS client_download_bytes,
+       COUNT(DISTINCT client_ip || char(0) || client_mac) AS client_count
+FROM (
+  SELECT client_ip, client_mac, remote_ip, remote_port, direction, protocol, bytes
+  FROM endpoint_buckets
+  WHERE bucket_start >= ? AND bucket_start < ? AND protocol = 'udp'
+  UNION ALL
+  SELECT client_ip, client_mac, remote_ip, remote_port, direction, protocol, bytes
+  FROM endpoint_hourly_buckets
+  WHERE bucket_start >= ? AND bucket_start < ? AND protocol = 'udp'
+)
+GROUP BY remote_ip, remote_port, protocol
+),
+wan_udp AS (
+SELECT remote_ip, remote_port, protocol,
+       COALESCE(SUM(CASE WHEN direction = 'upload' THEN bytes ELSE 0 END), 0) AS wan_upload_bytes,
+       COALESCE(SUM(CASE WHEN direction = 'download' THEN bytes ELSE 0 END), 0) AS wan_download_bytes
+FROM (
+  SELECT remote_ip, remote_port, direction, protocol, bytes
+  FROM wan_endpoint_buckets
+  WHERE bucket_start >= ? AND bucket_start < ? AND protocol = 'udp'
+  UNION ALL
+  SELECT remote_ip, remote_port, direction, protocol, bytes
+  FROM wan_endpoint_hourly_buckets
+  WHERE bucket_start >= ? AND bucket_start < ? AND protocol = 'udp'
+)
+GROUP BY remote_ip, remote_port, protocol
+)
+SELECT wan.remote_ip, wan.remote_port, wan.protocol,
+       wan.wan_upload_bytes, wan.wan_download_bytes,
+       COALESCE(client.client_upload_bytes, 0), COALESCE(client.client_download_bytes, 0),
+       MAX(wan.wan_upload_bytes - COALESCE(client.client_upload_bytes, 0), 0),
+       MAX(wan.wan_download_bytes - COALESCE(client.client_download_bytes, 0), 0),
+       COALESCE(client.client_count, 0)
+FROM wan_udp wan
+LEFT JOIN client_udp client
+  ON client.remote_ip = wan.remote_ip
+ AND client.remote_port = wan.remote_port
+ AND client.protocol = wan.protocol
+ORDER BY
+  (MAX(wan.wan_upload_bytes - COALESCE(client.client_upload_bytes, 0), 0) +
+   MAX(wan.wan_download_bytes - COALESCE(client.client_download_bytes, 0), 0)) DESC,
+  wan.remote_ip ASC,
+  wan.remote_port ASC,
+  wan.protocol ASC
+LIMIT ?;
+`, from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix(), from.UTC().Unix(), to.UTC().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []AnalysisWANUDPClientGapSummary
+	for rows.Next() {
+		var remoteIPText string
+		var remotePort int
+		var protocol string
+		var wanUploadBytes int64
+		var wanDownloadBytes int64
+		var clientUploadBytes int64
+		var clientDownloadBytes int64
+		var unattributedUploadBytes int64
+		var unattributedDownloadBytes int64
+		var clientCount int
+		if err := rows.Scan(
+			&remoteIPText,
+			&remotePort,
+			&protocol,
+			&wanUploadBytes,
+			&wanDownloadBytes,
+			&clientUploadBytes,
+			&clientDownloadBytes,
+			&unattributedUploadBytes,
+			&unattributedDownloadBytes,
+			&clientCount,
+		); err != nil {
+			return nil, err
+		}
+		remoteIP, err := netip.ParseAddr(remoteIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, AnalysisWANUDPClientGapSummary{
+			RemoteIP:                  remoteIP,
+			RemotePort:                uint16(remotePort),
+			Protocol:                  protocol,
+			WANUploadBytes:            wanUploadBytes,
+			WANDownloadBytes:          wanDownloadBytes,
+			ClientUploadBytes:         clientUploadBytes,
+			ClientDownloadBytes:       clientDownloadBytes,
+			UnattributedUploadBytes:   unattributedUploadBytes,
+			UnattributedDownloadBytes: unattributedDownloadBytes,
+			ClientCount:               clientCount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *SQLiteStore) QueryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT observed_at, client_ip, client_mac, name, record_type, answer_ip, ttl, source
@@ -1134,6 +1603,90 @@ func (s *SQLiteStore) QueryFlowSessions(ctx context.Context, from, to time.Time)
 
 func (s *SQLiteStore) QueryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
 	return s.queryFlowSessions(ctx, from, to, viewpoint)
+}
+
+func (s *SQLiteStore) QueryTopFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, limit int) ([]traffic.FlowSession, error) {
+	if limit <= 0 {
+		return []traffic.FlowSession{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
+       first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
+       has_dns_evidence, has_tls_evidence
+FROM flow_sessions
+WHERE last_seen >= ? AND first_seen < ? AND viewpoint = ?
+ORDER BY (upload_bytes + download_bytes) DESC, first_seen DESC, id DESC
+LIMIT ?;
+`, from.UTC().Unix(), to.UTC().Unix(), string(viewpoint), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []traffic.FlowSession
+	for rows.Next() {
+		session, err := scanFlowSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []FlowSessionMatchKey) ([]traffic.FlowSession, error) {
+	if len(keys) == 0 {
+		return []traffic.FlowSession{}, nil
+	}
+
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString(`
+WITH target_keys(remote_ip, remote_port, protocol) AS (
+VALUES `)
+	args := make([]any, 0, len(keys)*3+3)
+	for index, key := range keys {
+		if index > 0 {
+			queryBuilder.WriteString(", ")
+		}
+		queryBuilder.WriteString("(?, ?, ?)")
+		args = append(args, key.RemoteIP.String(), int(key.RemotePort), key.Protocol)
+	}
+	queryBuilder.WriteString(`
+)
+SELECT fs.id, fs.viewpoint, fs.protocol, fs.local_ip, fs.local_port, fs.remote_ip, fs.remote_port, fs.client_ip, fs.client_mac,
+       fs.first_seen, fs.last_seen, fs.upload_bytes, fs.download_bytes, fs.packets, fs.syn_seen, fs.fin_seen, fs.rst_seen,
+       fs.has_dns_evidence, fs.has_tls_evidence
+FROM flow_sessions fs
+JOIN target_keys tk
+  ON tk.remote_ip = fs.remote_ip
+ AND tk.remote_port = fs.remote_port
+ AND tk.protocol = fs.protocol
+WHERE fs.last_seen >= ? AND fs.first_seen < ? AND fs.viewpoint = ?
+ORDER BY fs.first_seen ASC, fs.id ASC;
+`)
+	args = append(args, from.UTC().Unix(), to.UTC().Unix(), string(viewpoint))
+
+	rows, err := s.db.QueryContext(ctx, queryBuilder.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []traffic.FlowSession
+	for rows.Next() {
+		session, err := scanFlowSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *SQLiteStore) queryFlowSessions(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {

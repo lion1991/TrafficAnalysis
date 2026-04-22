@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"trafficanalysis/internal/store"
@@ -22,6 +23,8 @@ import (
 var embeddedStatic embed.FS
 
 const liveHeartbeatInterval = 15 * time.Second
+
+const analysisCacheTTL = 10 * time.Second
 
 type BucketQueryer interface {
 	QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error)
@@ -37,6 +40,10 @@ type EndpointBucketQueryer interface {
 
 type WANEndpointBucketQueryer interface {
 	QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.WANEndpointBucketRow, error)
+}
+
+type AnalysisOverviewQueryer interface {
+	QueryAnalysisOverview(ctx context.Context, from, to time.Time, topClientLimit, topEndpointLimit int) (store.AnalysisOverview, error)
 }
 
 type ClientAliasWriter interface {
@@ -64,6 +71,11 @@ type ViewpointFlowSessionQueryer interface {
 	QueryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error)
 }
 
+type FlowSessionReconcileQueryer interface {
+	QueryTopFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, limit int) ([]traffic.FlowSession, error)
+	QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey) ([]traffic.FlowSession, error)
+}
+
 type Options struct {
 	Location   *time.Location
 	Now        func() time.Time
@@ -84,6 +96,17 @@ type server struct {
 	location             *time.Location
 	now                  func() time.Time
 	liveSource           LiveSource
+	analysisCache        responseCache
+}
+
+type cachedResponse struct {
+	expiresAt time.Time
+	payload   []byte
+}
+
+type responseCache struct {
+	mu      sync.RWMutex
+	entries map[string]cachedResponse
 }
 
 func NewHandler(queryer BucketQueryer, options Options) http.Handler {
@@ -110,6 +133,9 @@ func NewHandler(queryer BucketQueryer, options Options) http.Handler {
 		location:             location,
 		now:                  now,
 		liveSource:           options.LiveSource,
+		analysisCache: responseCache{
+			entries: make(map[string]cachedResponse),
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -187,6 +213,57 @@ func viewpointTLSObservationQueryer(queryer BucketQueryer) ViewpointTLSObservati
 		return nil
 	}
 	return filtered
+}
+
+func (c *responseCache) get(now time.Time, key string) ([]byte, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if now.After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.entries, key)
+		c.mu.Unlock()
+		return nil, false
+	}
+	return append([]byte(nil), entry.payload...), true
+}
+
+func (c *responseCache) set(now time.Time, key string, payload []byte, ttl time.Duration) {
+	c.mu.Lock()
+	c.entries[key] = cachedResponse{
+		expiresAt: now.Add(ttl),
+		payload:   append([]byte(nil), payload...),
+	}
+	c.mu.Unlock()
+}
+
+func analysisCacheKey(name string, from, to time.Time) string {
+	return name + "\x00" + from.UTC().Format(time.RFC3339Nano) + "\x00" + to.UTC().Format(time.RFC3339Nano)
+}
+
+func (s server) writeCachedAnalysisJSON(w http.ResponseWriter, key string, build func() (any, error)) {
+	if payload, ok := s.analysisCache.get(s.now(), key); ok {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payload)
+		return
+	}
+
+	response, err := build()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	payload, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "encode analysis response", http.StatusInternalServerError)
+		return
+	}
+	s.analysisCache.set(s.now(), key, payload, analysisCacheTTL)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload)
 }
 
 func viewpointFlowSessionQueryer(queryer BucketQueryer) ViewpointFlowSessionQueryer {
@@ -323,43 +400,44 @@ func (s server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	trafficRows, err := s.queryer.QueryBuckets(r.Context(), from, to)
-	if err != nil {
-		http.Error(w, "query traffic buckets", http.StatusInternalServerError)
-		return
-	}
-
-	var clientRows []store.ClientBucketRow
-	if s.clientQueryer != nil {
-		clientRows, err = s.clientQueryer.QueryClientBuckets(r.Context(), from, to, "")
-		if err != nil {
-			http.Error(w, "query client traffic buckets", http.StatusInternalServerError)
-			return
+	s.writeCachedAnalysisJSON(w, analysisCacheKey("analysis", from, to), func() (any, error) {
+		if overviewQueryer, ok := s.queryer.(AnalysisOverviewQueryer); ok {
+			overview, err := overviewQueryer.QueryAnalysisOverview(r.Context(), from, to, 8, 20)
+			if err != nil {
+				return nil, fmt.Errorf("query analysis overview")
+			}
+			return buildAnalysisResponseFromOverview(from, to, overview), nil
 		}
-	}
-	var endpointRows []store.EndpointBucketRow
-	if s.endpointQueryer != nil {
-		endpointRows, err = s.endpointQueryer.QueryEndpointBuckets(r.Context(), from, to)
-		if err != nil {
-			http.Error(w, "query endpoint traffic buckets", http.StatusInternalServerError)
-			return
-		}
-	}
-	var wanEndpointRows []store.WANEndpointBucketRow
-	if s.wanEndpointQueryer != nil {
-		wanEndpointRows, err = s.wanEndpointQueryer.QueryWANEndpointBuckets(r.Context(), from, to)
-		if err != nil {
-			http.Error(w, "query WAN endpoint traffic buckets", http.StatusInternalServerError)
-			return
-		}
-	}
 
-	response := buildAnalysisResponse(from, to, trafficRows, clientRows, endpointRows, wanEndpointRows)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		return
-	}
+		trafficRows, err := s.queryer.QueryBuckets(r.Context(), from, to)
+		if err != nil {
+			return nil, fmt.Errorf("query traffic buckets")
+		}
+
+		var clientRows []store.ClientBucketRow
+		if s.clientQueryer != nil {
+			clientRows, err = s.clientQueryer.QueryClientBuckets(r.Context(), from, to, "")
+			if err != nil {
+				return nil, fmt.Errorf("query client traffic buckets")
+			}
+		}
+		var endpointRows []store.EndpointBucketRow
+		if s.endpointQueryer != nil {
+			endpointRows, err = s.endpointQueryer.QueryEndpointBuckets(r.Context(), from, to)
+			if err != nil {
+				return nil, fmt.Errorf("query endpoint traffic buckets")
+			}
+		}
+		var wanEndpointRows []store.WANEndpointBucketRow
+		if s.wanEndpointQueryer != nil {
+			wanEndpointRows, err = s.wanEndpointQueryer.QueryWANEndpointBuckets(r.Context(), from, to)
+			if err != nil {
+				return nil, fmt.Errorf("query WAN endpoint traffic buckets")
+			}
+		}
+
+		return buildAnalysisResponse(from, to, trafficRows, clientRows, endpointRows, wanEndpointRows), nil
+	})
 }
 
 func (s server) handleAnalysisObjects(w http.ResponseWriter, r *http.Request) {
@@ -378,26 +456,22 @@ func (s server) handleAnalysisObjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.writeCachedAnalysisJSON(w, analysisCacheKey("objects", from, to), func() (any, error) {
+		sessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
+		if err != nil {
+			return nil, err
+		}
+		dnsRows, err := s.queryDNSObservations(r.Context(), from, to)
+		if err != nil {
+			return nil, err
+		}
+		tlsRows, err := s.queryTLSObservationsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
+		if err != nil {
+			return nil, err
+		}
 
-	sessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	dnsRows, err := s.queryDNSObservations(r.Context(), from, to)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	tlsRows, err := s.queryTLSObservationsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	response := buildObjectsResponse(from, to, sessions, dnsRows, tlsRows)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+		return buildObjectsResponse(from, to, sessions, dnsRows, tlsRows), nil
+	})
 }
 
 func (s server) handleAnalysisReconcile(w http.ResponseWriter, r *http.Request) {
@@ -416,21 +490,31 @@ func (s server) handleAnalysisReconcile(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.writeCachedAnalysisJSON(w, analysisCacheKey("reconcile", from, to), func() (any, error) {
+		if reconcileQueryer, ok := s.flowSessionQueryer.(FlowSessionReconcileQueryer); ok {
+			wanSessions, err := reconcileQueryer.QueryTopFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN, maxAnalysisReconcileRows*20)
+			if err != nil {
+				return nil, err
+			}
+			keys := reconcileMatchKeysFromSessions(wanSessions)
+			lanSessions, err := reconcileQueryer.QueryFlowSessionsByViewpointAndRemoteKeys(r.Context(), from, to, traffic.ViewpointLAN, keys)
+			if err != nil {
+				return nil, err
+			}
+			return buildReconcileResponse(from, to, wanSessions, lanSessions), nil
+		}
 
-	wanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	lanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		wanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN)
+		if err != nil {
+			return nil, err
+		}
+		lanSessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
+		if err != nil {
+			return nil, err
+		}
 
-	response := buildReconcileResponse(from, to, wanSessions, lanSessions)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+		return buildReconcileResponse(from, to, wanSessions, lanSessions), nil
+	})
 }
 
 func (s server) handleAnalysisSession(w http.ResponseWriter, r *http.Request) {
@@ -993,6 +1077,127 @@ func buildAnalysisResponse(from, to time.Time, trafficRows []store.BucketRow, cl
 		}
 	}
 
+	response.Signals = buildAnalysisSignals(response.Totals, response.TopUploadClients)
+	return response
+}
+
+func buildAnalysisResponseFromOverview(from, to time.Time, overview store.AnalysisOverview) analysisResponse {
+	clients := make([]clientSummaryRow, 0, len(overview.Clients))
+	uploadClientCount := 0
+	for _, client := range overview.Clients {
+		displayName, nameSource := displayClientName(
+			client.Alias,
+			client.Name,
+			client.NameSource,
+			client.ClientIP.String(),
+			client.ClientMAC,
+		)
+		clients = append(clients, clientSummaryRow{
+			DisplayName:   displayName,
+			NameSource:    nameSource,
+			Alias:         client.Alias,
+			LearnedName:   client.Name,
+			ClientIP:      client.ClientIP.String(),
+			ClientMAC:     client.ClientMAC,
+			UploadBytes:   client.UploadBytes,
+			DownloadBytes: client.DownloadBytes,
+			Packets:       client.Packets,
+		})
+		if client.UploadBytes > 0 {
+			uploadClientCount++
+		}
+	}
+
+	remoteEndpoints := make([]remoteEndpointRow, 0, len(overview.RemoteEndpoints))
+	for _, row := range overview.RemoteEndpoints {
+		remoteEndpoints = append(remoteEndpoints, remoteEndpointRow{
+			RemoteIP:      row.RemoteIP.String(),
+			RemotePort:    row.RemotePort,
+			Protocol:      row.Protocol,
+			UploadBytes:   row.UploadBytes,
+			DownloadBytes: row.DownloadBytes,
+			Packets:       row.Packets,
+			ClientCount:   row.ClientCount,
+		})
+	}
+
+	wanRemoteEndpoints := make([]wanRemoteEndpointRow, 0, len(overview.WANRemoteEndpoints))
+	for _, row := range overview.WANRemoteEndpoints {
+		wanRemoteEndpoints = append(wanRemoteEndpoints, wanRemoteEndpointRow{
+			RemoteIP:      row.RemoteIP.String(),
+			RemotePort:    row.RemotePort,
+			Protocol:      row.Protocol,
+			UploadBytes:   row.UploadBytes,
+			DownloadBytes: row.DownloadBytes,
+			Packets:       row.Packets,
+		})
+	}
+
+	wanUDPEndpoints := make([]wanRemoteEndpointRow, 0, len(overview.WANUDPRemoteEnds))
+	for _, row := range overview.WANUDPRemoteEnds {
+		wanUDPEndpoints = append(wanUDPEndpoints, wanRemoteEndpointRow{
+			RemoteIP:      row.RemoteIP.String(),
+			RemotePort:    row.RemotePort,
+			Protocol:      row.Protocol,
+			UploadBytes:   row.UploadBytes,
+			DownloadBytes: row.DownloadBytes,
+			Packets:       row.Packets,
+		})
+	}
+
+	wanUDPClientGaps := make([]wanUDPClientGapRow, 0, len(overview.WANUDPClientGaps))
+	for _, row := range overview.WANUDPClientGaps {
+		wanUDPClientGaps = append(wanUDPClientGaps, wanUDPClientGapRow{
+			RemoteIP:                  row.RemoteIP.String(),
+			RemotePort:                row.RemotePort,
+			Protocol:                  row.Protocol,
+			WANUploadBytes:            row.WANUploadBytes,
+			WANDownloadBytes:          row.WANDownloadBytes,
+			ClientUploadBytes:         row.ClientUploadBytes,
+			ClientDownloadBytes:       row.ClientDownloadBytes,
+			UnattributedUploadBytes:   row.UnattributedUploadBytes,
+			UnattributedDownloadBytes: row.UnattributedDownloadBytes,
+			ClientCount:               row.ClientCount,
+		})
+	}
+
+	response := analysisResponse{
+		Range: responseRange{
+			From: from.UTC().Format(time.RFC3339),
+			To:   to.UTC().Format(time.RFC3339),
+		},
+		Totals: analysisTotals{
+			UploadBytes:       overview.Totals.UploadBytes,
+			DownloadBytes:     overview.Totals.DownloadBytes,
+			LANBytes:          overview.Totals.LANBytes,
+			OtherBytes:        overview.Totals.OtherBytes,
+			UnknownBytes:      overview.Totals.UnknownBytes,
+			Packets:           overview.Totals.Packets,
+			PeakUploadBytes:   overview.Totals.PeakUploadBytes,
+			ActiveClientCount: len(overview.Clients),
+			UploadClientCount: uploadClientCount,
+		},
+		TopUploadClients:   topClientsBy(clients, "upload", 8),
+		TopDownloadClients: topClientsBy(clients, "download", 8),
+		RemoteEndpoints:    remoteEndpoints,
+		WANRemoteEndpoints: wanRemoteEndpoints,
+		WANUDPRemoteEnds:   wanUDPEndpoints,
+		WANUDPClientGaps:   wanUDPClientGaps,
+		Limitations: []string{
+			"当前分析基于已落库的时间 bucket 和客户端汇总。",
+			"客户端远端 IP/端口维度来自 LAN 镜像口捕获到的客户端公网流量。",
+			"WAN 远端排行来自 WAN 镜像口，能定位 NAT 后未归属到客户端的公网流量。",
+			"WAN UDP 远端排行只展示 UDP，会补足综合排行里被 TCP Top 项挤掉的长期 UDP 观察。",
+			"WAN UDP 对照表按同一远端 IP、端口、协议比较 WAN 与客户端侧统计，用于定位未归属流量。",
+		},
+	}
+	totalWAN := response.Totals.UploadBytes + response.Totals.DownloadBytes
+	if !overview.Totals.PeakUploadBucket.IsZero() {
+		response.Totals.PeakUploadBucket = overview.Totals.PeakUploadBucket.UTC().Format(time.RFC3339)
+	}
+	if totalWAN > 0 {
+		response.Totals.UploadShare = float64(response.Totals.UploadBytes) / float64(totalWAN)
+	}
 	response.Signals = buildAnalysisSignals(response.Totals, response.TopUploadClients)
 	return response
 }
@@ -1659,6 +1864,24 @@ func filterTLSObservationsForSession(session traffic.FlowSession, observations [
 
 func reconcileMatchKey(session traffic.FlowSession) string {
 	return session.Protocol + "\x00" + session.RemoteIP.String() + "\x00" + strconv.Itoa(int(session.RemotePort))
+}
+
+func reconcileMatchKeysFromSessions(sessions []traffic.FlowSession) []store.FlowSessionMatchKey {
+	seen := make(map[string]struct{}, len(sessions))
+	keys := make([]store.FlowSessionMatchKey, 0, len(sessions))
+	for _, session := range sessions {
+		key := reconcileMatchKey(session)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, store.FlowSessionMatchKey{
+			RemoteIP:   session.RemoteIP,
+			RemotePort: session.RemotePort,
+			Protocol:   session.Protocol,
+		})
+	}
+	return keys
 }
 
 func buildLANSessionIndex(lanSessions []traffic.FlowSession) map[string][]traffic.FlowSession {

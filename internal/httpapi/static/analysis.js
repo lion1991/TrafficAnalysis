@@ -29,6 +29,9 @@ const elements = {
 
 let refreshTimer = null;
 let activeRequestController = null;
+let latestAnalysis = null;
+let latestObjects = [];
+let latestReconcile = [];
 const ANALYSIS_PREFS_KEY = "ta_analysis_prefs";
 const MAX_OBJECT_ROWS = 200;
 const MAX_RECONCILE_ROWS = 200;
@@ -203,6 +206,8 @@ async function loadAnalysis() {
   abortActiveRequest();
   const requestController = new AbortController();
   activeRequestController = requestController;
+  latestObjects = [];
+  latestReconcile = [];
   elements.status.textContent = "分析中";
   elements.status.style.background = "var(--accent)";
 
@@ -211,7 +216,8 @@ async function loadAnalysis() {
     if (activeRequestController !== requestController) {
       return;
     }
-    renderAnalysis(analysis);
+    latestAnalysis = analysis;
+    renderLoadedRows();
     elements.status.textContent = "基础结果已更新，正在补充访问对象和 WAN/LAN 对账";
     elements.status.style.background = "#dfe9b1";
     const [objectsResult, reconcileResult] = await Promise.allSettled([
@@ -221,8 +227,9 @@ async function loadAnalysis() {
     if (activeRequestController !== requestController) {
       return;
     }
-    renderObjects(objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : []);
-    renderReconcile(reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : []);
+    latestObjects = objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : [];
+    latestReconcile = reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : [];
+    renderLoadedRows();
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";
   } catch (error) {
@@ -237,6 +244,14 @@ async function loadAnalysis() {
       activeRequestController = null;
     }
   }
+}
+
+function renderLoadedRows() {
+  if (latestAnalysis) {
+    renderAnalysis(latestAnalysis);
+  }
+  renderObjects(latestObjects);
+  renderReconcile(latestReconcile);
 }
 
 function renderAnalysis(data) {
@@ -555,7 +570,7 @@ function setSort(table, field) {
   }
   savePrefs();
   renderSortHeaders();
-  loadAnalysis();
+  renderLoadedRows();
 }
 
 function renderSortHeaders() {

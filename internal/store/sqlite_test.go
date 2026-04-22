@@ -249,6 +249,77 @@ func TestSQLiteStoreUpsertsAndQueriesWANEndpointBuckets(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreQueryAnalysisOverviewAggregatesAnalysisPageData(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	remoteTCP := netip.MustParseAddr("203.0.113.9")
+	remoteUDP := netip.MustParseAddr("198.51.100.8")
+
+	if err := store.UpsertBuckets(ctx, map[traffic.BucketKey]traffic.BucketValue{
+		{Start: start, Direction: traffic.DirectionUpload, Protocol: "tcp"}:   {Bytes: 1200, Packets: 3},
+		{Start: start, Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 3400, Packets: 4},
+	}); err != nil {
+		t.Fatalf("upsert traffic buckets: %v", err)
+	}
+
+	if err := store.UpsertClientBuckets(ctx, map[traffic.ClientBucketKey]traffic.BucketValue{
+		{Start: start, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55", Direction: traffic.DirectionUpload, Protocol: "tcp"}:   {Bytes: 1200, Packets: 3},
+		{Start: start, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55", Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 3000, Packets: 4},
+	}); err != nil {
+		t.Fatalf("upsert client buckets: %v", err)
+	}
+
+	if err := store.UpsertEndpointBuckets(ctx, map[traffic.EndpointBucketKey]traffic.BucketValue{
+		{Start: start, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55", RemoteIP: remoteTCP, RemotePort: 443, Direction: traffic.DirectionUpload, Protocol: "tcp"}:    {Bytes: 1200, Packets: 3},
+		{Start: start, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55", RemoteIP: remoteUDP, RemotePort: 3478, Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 3000, Packets: 4},
+	}); err != nil {
+		t.Fatalf("upsert endpoint buckets: %v", err)
+	}
+
+	if err := store.UpsertWANEndpointBuckets(ctx, map[traffic.WANEndpointBucketKey]traffic.BucketValue{
+		{Start: start, RemoteIP: remoteUDP, RemotePort: 3478, Direction: traffic.DirectionUpload, Protocol: "udp"}:   {Bytes: 4000, Packets: 5},
+		{Start: start, RemoteIP: remoteUDP, RemotePort: 3478, Direction: traffic.DirectionDownload, Protocol: "udp"}: {Bytes: 3500, Packets: 6},
+	}); err != nil {
+		t.Fatalf("upsert WAN endpoint buckets: %v", err)
+	}
+
+	overview, err := store.QueryAnalysisOverview(ctx, start.Add(-time.Minute), start.Add(time.Minute), 8, 20)
+	if err != nil {
+		t.Fatalf("query analysis overview: %v", err)
+	}
+
+	if overview.Totals.UploadBytes != 1200 || overview.Totals.DownloadBytes != 3400 || overview.Totals.Packets != 7 {
+		t.Fatalf("unexpected overview totals: %#v", overview.Totals)
+	}
+	if overview.Totals.PeakUploadBytes != 1200 || !overview.Totals.PeakUploadBucket.Equal(start) {
+		t.Fatalf("unexpected peak upload summary: %#v", overview.Totals)
+	}
+	if len(overview.Clients) != 1 || overview.Clients[0].UploadBytes != 1200 || overview.Clients[0].DownloadBytes != 3000 {
+		t.Fatalf("unexpected client summaries: %#v", overview.Clients)
+	}
+	if len(overview.RemoteEndpoints) != 2 {
+		t.Fatalf("unexpected remote endpoints: %#v", overview.RemoteEndpoints)
+	}
+	if len(overview.WANRemoteEndpoints) != 1 || overview.WANRemoteEndpoints[0].UploadBytes != 4000 || overview.WANRemoteEndpoints[0].DownloadBytes != 3500 {
+		t.Fatalf("unexpected WAN remote endpoints: %#v", overview.WANRemoteEndpoints)
+	}
+	if len(overview.WANUDPClientGaps) != 1 {
+		t.Fatalf("unexpected WAN UDP client gaps: %#v", overview.WANUDPClientGaps)
+	}
+	if overview.WANUDPClientGaps[0].UnattributedUploadBytes != 4000 || overview.WANUDPClientGaps[0].UnattributedDownloadBytes != 500 {
+		t.Fatalf("unexpected WAN UDP client gap summary: %#v", overview.WANUDPClientGaps[0])
+	}
+}
+
 func TestSQLiteStoreStoresClientNamesAndReturnsThemWithClientBuckets(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "traffic.db")
@@ -754,5 +825,83 @@ func TestSQLiteStoreCanQueryFlowSessionsByViewpoint(t *testing.T) {
 	}
 	if len(wanRows) != 1 || wanRows[0].Viewpoint != traffic.ViewpointWAN {
 		t.Fatalf("expected only WAN rows, got %#v", wanRows)
+	}
+}
+
+func TestSQLiteStoreCanQueryReconcileFlowSessionCandidates(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	for _, session := range []traffic.FlowSession{
+		{
+			Viewpoint:     traffic.ViewpointWAN,
+			Protocol:      "udp",
+			LocalIP:       netip.MustParseAddr("198.51.100.10"),
+			LocalPort:     52000,
+			RemoteIP:      netip.MustParseAddr("198.51.100.8"),
+			RemotePort:    3478,
+			FirstSeen:     start,
+			LastSeen:      start.Add(10 * time.Second),
+			UploadBytes:   9000,
+			DownloadBytes: 1000,
+			Packets:       8,
+		},
+		{
+			Viewpoint:     traffic.ViewpointWAN,
+			Protocol:      "udp",
+			LocalIP:       netip.MustParseAddr("198.51.100.10"),
+			LocalPort:     52001,
+			RemoteIP:      netip.MustParseAddr("203.0.113.9"),
+			RemotePort:    9999,
+			FirstSeen:     start,
+			LastSeen:      start.Add(10 * time.Second),
+			UploadBytes:   1000,
+			DownloadBytes: 200,
+			Packets:       3,
+		},
+		{
+			Viewpoint:     traffic.ViewpointLAN,
+			Protocol:      "udp",
+			LocalIP:       netip.MustParseAddr("192.168.248.22"),
+			LocalPort:     53000,
+			RemoteIP:      netip.MustParseAddr("198.51.100.8"),
+			RemotePort:    3478,
+			ClientIP:      netip.MustParseAddr("192.168.248.22"),
+			ClientMAC:     "00:11:22:33:44:55",
+			FirstSeen:     start,
+			LastSeen:      start.Add(10 * time.Second),
+			UploadBytes:   8000,
+			DownloadBytes: 900,
+			Packets:       7,
+		},
+	} {
+		if _, err := store.InsertFlowSession(ctx, session); err != nil {
+			t.Fatalf("insert flow session: %v", err)
+		}
+	}
+
+	topWAN, err := store.QueryTopFlowSessionsByViewpoint(ctx, start.Add(-time.Minute), start.Add(time.Minute), traffic.ViewpointWAN, 1)
+	if err != nil {
+		t.Fatalf("query top wan flow sessions: %v", err)
+	}
+	if len(topWAN) != 1 || topWAN[0].RemoteIP != netip.MustParseAddr("198.51.100.8") {
+		t.Fatalf("expected highest-byte WAN session first, got %#v", topWAN)
+	}
+
+	lanMatches, err := store.QueryFlowSessionsByViewpointAndRemoteKeys(ctx, start.Add(-time.Minute), start.Add(time.Minute), traffic.ViewpointLAN, []FlowSessionMatchKey{
+		{RemoteIP: netip.MustParseAddr("198.51.100.8"), RemotePort: 3478, Protocol: "udp"},
+	})
+	if err != nil {
+		t.Fatalf("query lan match sessions: %v", err)
+	}
+	if len(lanMatches) != 1 || lanMatches[0].RemoteIP != netip.MustParseAddr("198.51.100.8") {
+		t.Fatalf("expected only matching LAN session, got %#v", lanMatches)
 	}
 }

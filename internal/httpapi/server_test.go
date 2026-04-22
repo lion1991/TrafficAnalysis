@@ -30,11 +30,25 @@ type fakeBucketQueryer struct {
 	dnsRows         []traffic.DNSObservation
 	tlsRows         []traffic.TLSObservation
 	flowSessions    []traffic.FlowSession
+	bucketQueries   int
+	clientQueries   int
+	endpointQueries int
+	wanQueries      int
+	dnsQueries      int
+	tlsQueries      int
+	flowQueries     int
+}
+
+type fakeAnalysisOverviewQueryer struct {
+	*fakeBucketQueryer
+	analysisOverview store.AnalysisOverview
+	overviewQueries  int
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
 	f.from = from
 	f.to = to
+	f.bucketQueries++
 	return f.rows, nil
 }
 
@@ -42,18 +56,21 @@ func (f *fakeBucketQueryer) QueryClientBuckets(ctx context.Context, from, to tim
 	f.from = from
 	f.to = to
 	f.clientIP = clientIP
+	f.clientQueries++
 	return f.clientRows, nil
 }
 
 func (f *fakeBucketQueryer) QueryEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.EndpointBucketRow, error) {
 	f.from = from
 	f.to = to
+	f.endpointQueries++
 	return f.endpointRows, nil
 }
 
 func (f *fakeBucketQueryer) QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.WANEndpointBucketRow, error) {
 	f.from = from
 	f.to = to
+	f.wanQueries++
 	return f.wanEndpointRows, nil
 }
 
@@ -67,18 +84,21 @@ func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, cli
 func (f *fakeBucketQueryer) QueryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
 	f.from = from
 	f.to = to
+	f.dnsQueries++
 	return f.dnsRows, nil
 }
 
 func (f *fakeBucketQueryer) QueryTLSObservations(ctx context.Context, from, to time.Time) ([]traffic.TLSObservation, error) {
 	f.from = from
 	f.to = to
+	f.tlsQueries++
 	return f.tlsRows, nil
 }
 
 func (f *fakeBucketQueryer) QueryFlowSessions(ctx context.Context, from, to time.Time) ([]traffic.FlowSession, error) {
 	f.from = from
 	f.to = to
+	f.flowQueries++
 	return f.flowSessions, nil
 }
 
@@ -89,6 +109,13 @@ func (f *fakeBucketQueryer) QueryFlowSessionByID(ctx context.Context, id int64) 
 		}
 	}
 	return traffic.FlowSession{}, os.ErrNotExist
+}
+
+func (f *fakeAnalysisOverviewQueryer) QueryAnalysisOverview(ctx context.Context, from, to time.Time, topClientLimit, topEndpointLimit int) (store.AnalysisOverview, error) {
+	f.from = from
+	f.to = to
+	f.overviewQueries++
+	return f.analysisOverview, nil
 }
 
 func TestTrafficAPIReturnsTotalsSeriesAndBreakdown(t *testing.T) {
@@ -898,6 +925,102 @@ func TestBuildReconcileResponseLimitsRowsToLargestUnattributedTotals(t *testing.
 	}
 }
 
+func TestAnalysisEndpointCachesRepeatedRangeRequests(t *testing.T) {
+	queryer := &fakeBucketQueryer{
+		rows: []store.BucketRow{
+			{
+				Key: traffic.BucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 1200, Packets: 3},
+			},
+		},
+		clientRows: []store.ClientBucketRow{
+			{
+				Key: traffic.ClientBucketKey{
+					Start:     time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+					ClientIP:  trafficMustAddr("192.168.248.22"),
+					ClientMAC: "00:11:22:33:44:55",
+					Direction: traffic.DirectionUpload,
+					Protocol:  "tcp",
+				},
+				Value: traffic.BucketValue{Bytes: 1200, Packets: 3},
+			},
+		},
+	}
+	now := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	handler := NewHandler(queryer, Options{
+		Location: time.UTC,
+		Now:      func() time.Time { return now },
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis?last=1h", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected first request 200, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/analysis?last=1h", nil))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected second request 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	if rec1.Body.String() != rec2.Body.String() {
+		t.Fatalf("expected cached analysis response to be reused")
+	}
+	if queryer.bucketQueries != 1 || queryer.clientQueries != 1 || queryer.endpointQueries != 1 || queryer.wanQueries != 1 {
+		t.Fatalf("expected analysis cache to avoid repeated source queries, got buckets=%d clients=%d endpoints=%d wan=%d",
+			queryer.bucketQueries, queryer.clientQueries, queryer.endpointQueries, queryer.wanQueries)
+	}
+}
+
+func TestAnalysisEndpointPrefersOverviewQueryerFastPath(t *testing.T) {
+	now := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	queryer := &fakeAnalysisOverviewQueryer{
+		fakeBucketQueryer: &fakeBucketQueryer{},
+		analysisOverview: store.AnalysisOverview{
+			Totals: store.AnalysisOverviewTotals{
+				UploadBytes:      1200,
+				DownloadBytes:    3400,
+				Packets:          7,
+				PeakUploadBytes:  1200,
+				PeakUploadBucket: time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+			},
+			Clients: []store.AnalysisClientSummary{
+				{
+					ClientIP:      trafficMustAddr("192.168.248.22"),
+					ClientMAC:     "00:11:22:33:44:55",
+					UploadBytes:   1200,
+					DownloadBytes: 3400,
+					Packets:       7,
+				},
+			},
+		},
+	}
+	handler := NewHandler(queryer, Options{
+		Location: time.UTC,
+		Now:      func() time.Time { return now },
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/analysis?last=1h", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.overviewQueries != 1 {
+		t.Fatalf("expected overview fast path to be used once, got %d", queryer.overviewQueries)
+	}
+	if queryer.bucketQueries != 0 || queryer.clientQueries != 0 || queryer.endpointQueries != 0 || queryer.wanQueries != 0 {
+		t.Fatalf("expected overview fast path to skip raw bucket scans, got buckets=%d clients=%d endpoints=%d wan=%d",
+			queryer.bucketQueries, queryer.clientQueries, queryer.endpointQueries, queryer.wanQueries)
+	}
+}
+
 func TestWebAppStartsLiveStreamOnLoad(t *testing.T) {
 	data, err := embeddedStatic.ReadFile("static/app.js")
 	if err != nil {
@@ -1204,7 +1327,8 @@ func TestAnalysisPageRendersBaseResultsBeforeAuxiliaryTables(t *testing.T) {
 	}
 	for _, want := range []string{
 		"const analysis = await fetchJSON(buildAnalysisURL(), requestController.signal);",
-		"renderAnalysis(analysis);",
+		"latestAnalysis = analysis;",
+		"renderLoadedRows();",
 		"const [objectsResult, reconcileResult] = await Promise.allSettled([",
 		`elements.status.textContent = "基础结果已更新，正在补充访问对象和 WAN/LAN 对账";`,
 	} {
@@ -1228,6 +1352,26 @@ func TestAnalysisPageLimitsHeavyAuxiliaryTables(t *testing.T) {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("expected analysis page to clamp heavy auxiliary tables with %q", want)
 		}
+	}
+}
+
+func TestAnalysisPageSortsUsingLoadedRowsWithoutReloading(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		"let latestAnalysis = null;",
+		"let latestObjects = [];",
+		"let latestReconcile = [];",
+		"renderLoadedRows();",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page sorting to reuse loaded rows with %q", want)
+		}
+	}
+	if strings.Contains(string(js), "savePrefs();\n  renderSortHeaders();\n  loadAnalysis();\n}") {
+		t.Fatal("expected sort changes to avoid reloading the analysis endpoint")
 	}
 }
 
