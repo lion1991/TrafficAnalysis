@@ -562,3 +562,101 @@ WHERE client_ip = ? AND client_mac = ? AND direction = ? AND protocol = ?;
 		t.Fatalf("expected old hourly client traffic to be archived, got bytes=%d packets=%d", archivedClientBytes, archivedClientPackets)
 	}
 }
+
+func TestSQLiteStoreStoresAndQueriesAnalysisObservationsAndSessions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	observedAt := time.Date(2026, 4, 17, 11, 0, 0, 0, time.UTC)
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	remoteIP := netip.MustParseAddr("203.0.113.9")
+
+	err = store.UpsertDNSObservations(ctx, []traffic.DNSObservation{
+		{
+			ObservedAt: observedAt,
+			ClientIP:   clientIP,
+			ClientMAC:  "00:11:22:33:44:55",
+			Name:       "api.example.com",
+			RecordType: "A",
+			AnswerIP:   remoteIP,
+			TTL:        300,
+			Source:     "dns",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert dns observations: %v", err)
+	}
+
+	err = store.UpsertTLSObservations(ctx, []traffic.TLSObservation{
+		{
+			ObservedAt: observedAt.Add(2 * time.Second),
+			Viewpoint:  traffic.ViewpointLAN,
+			ClientIP:   clientIP,
+			ClientMAC:  "00:11:22:33:44:55",
+			RemoteIP:   remoteIP,
+			RemotePort: 443,
+			ServerName: "api.example.com",
+			ALPN:       "h2",
+			Protocol:   "tcp",
+			Source:     "tls_client_hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert tls observations: %v", err)
+	}
+
+	sessionID, err := store.InsertFlowSession(ctx, traffic.FlowSession{
+		Viewpoint:      traffic.ViewpointLAN,
+		Protocol:       "tcp",
+		LocalIP:        clientIP,
+		LocalPort:      53000,
+		RemoteIP:       remoteIP,
+		RemotePort:     443,
+		ClientIP:       clientIP,
+		ClientMAC:      "00:11:22:33:44:55",
+		FirstSeen:      observedAt,
+		LastSeen:       observedAt.Add(15 * time.Second),
+		UploadBytes:    4096,
+		DownloadBytes:  2048,
+		Packets:        12,
+		SYNSeen:        true,
+		HasDNSEvidence: true,
+		HasTLSEvidence: true,
+	})
+	if err != nil {
+		t.Fatalf("insert flow session: %v", err)
+	}
+
+	dnsRows, err := store.QueryDNSObservations(ctx, observedAt.Add(-time.Minute), observedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("query dns observations: %v", err)
+	}
+	if len(dnsRows) != 1 || dnsRows[0].Name != "api.example.com" || dnsRows[0].AnswerIP != remoteIP {
+		t.Fatalf("unexpected dns rows: %#v", dnsRows)
+	}
+
+	tlsRows, err := store.QueryTLSObservations(ctx, observedAt.Add(-time.Minute), observedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("query tls observations: %v", err)
+	}
+	if len(tlsRows) != 1 || tlsRows[0].ServerName != "api.example.com" || tlsRows[0].ALPN != "h2" {
+		t.Fatalf("unexpected tls rows: %#v", tlsRows)
+	}
+
+	sessions, err := store.QueryFlowSessions(ctx, observedAt.Add(-time.Minute), observedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("query flow sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != sessionID {
+		t.Fatalf("unexpected flow sessions: %#v", sessions)
+	}
+	if sessions[0].UploadBytes != 4096 || !sessions[0].HasDNSEvidence || !sessions[0].HasTLSEvidence {
+		t.Fatalf("unexpected flow session payload: %#v", sessions[0])
+	}
+}

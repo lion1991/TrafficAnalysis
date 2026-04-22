@@ -27,6 +27,9 @@ type fakeBucketQueryer struct {
 	clientRows      []store.ClientBucketRow
 	endpointRows    []store.EndpointBucketRow
 	wanEndpointRows []store.WANEndpointBucketRow
+	dnsRows         []traffic.DNSObservation
+	tlsRows         []traffic.TLSObservation
+	flowSessions    []traffic.FlowSession
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
@@ -59,6 +62,33 @@ func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, cli
 	f.aliasMAC = clientMAC
 	f.aliasName = alias
 	return nil
+}
+
+func (f *fakeBucketQueryer) QueryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
+	f.from = from
+	f.to = to
+	return f.dnsRows, nil
+}
+
+func (f *fakeBucketQueryer) QueryTLSObservations(ctx context.Context, from, to time.Time) ([]traffic.TLSObservation, error) {
+	f.from = from
+	f.to = to
+	return f.tlsRows, nil
+}
+
+func (f *fakeBucketQueryer) QueryFlowSessions(ctx context.Context, from, to time.Time) ([]traffic.FlowSession, error) {
+	f.from = from
+	f.to = to
+	return f.flowSessions, nil
+}
+
+func (f *fakeBucketQueryer) QueryFlowSessionByID(ctx context.Context, id int64) (traffic.FlowSession, error) {
+	for _, session := range f.flowSessions {
+		if session.ID == id {
+			return session, nil
+		}
+	}
+	return traffic.FlowSession{}, os.ErrNotExist
 }
 
 func TestTrafficAPIReturnsTotalsSeriesAndBreakdown(t *testing.T) {
@@ -619,6 +649,172 @@ func TestLiveSSEReturnsUnavailableWithoutLiveSource(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestAnalysisObjectsAPIReturnsAttributedObjects(t *testing.T) {
+	queryer := &fakeBucketQueryer{
+		dnsRows: []traffic.DNSObservation{
+			{
+				ObservedAt: time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+				ClientIP:   trafficMustAddr("192.168.248.22"),
+				ClientMAC:  "00:11:22:33:44:55",
+				Name:       "api.example.com",
+				RecordType: "A",
+				AnswerIP:   trafficMustAddr("203.0.113.9"),
+				TTL:        300,
+				Source:     "dns",
+			},
+		},
+		tlsRows: []traffic.TLSObservation{
+			{
+				ObservedAt: time.Date(2026, 4, 17, 10, 0, 2, 0, time.UTC),
+				Viewpoint:  traffic.ViewpointLAN,
+				ClientIP:   trafficMustAddr("192.168.248.22"),
+				ClientMAC:  "00:11:22:33:44:55",
+				RemoteIP:   trafficMustAddr("203.0.113.9"),
+				RemotePort: 443,
+				ServerName: "api.example.com",
+				ALPN:       "h2",
+				Protocol:   "tcp",
+				Source:     "tls_client_hello",
+			},
+		},
+		flowSessions: []traffic.FlowSession{
+			{
+				ID:            1,
+				Viewpoint:     traffic.ViewpointLAN,
+				Protocol:      "tcp",
+				LocalIP:       trafficMustAddr("192.168.248.22"),
+				LocalPort:     53000,
+				RemoteIP:      trafficMustAddr("203.0.113.9"),
+				RemotePort:    443,
+				ClientIP:      trafficMustAddr("192.168.248.22"),
+				ClientMAC:     "00:11:22:33:44:55",
+				FirstSeen:     time.Date(2026, 4, 17, 10, 0, 1, 0, time.UTC),
+				LastSeen:      time.Date(2026, 4, 17, 10, 0, 20, 0, time.UTC),
+				UploadBytes:   4096,
+				DownloadBytes: 2048,
+				Packets:       12,
+			},
+		},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis/objects?from=2026-04-17%2010:00&to=2026-04-17%2010:10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Objects []struct {
+			Label         string  `json:"label"`
+			LabelSource   string  `json:"label_source"`
+			Confidence    float64 `json:"confidence"`
+			UploadBytes   int64   `json:"upload_bytes"`
+			DownloadBytes int64   `json:"download_bytes"`
+			ClientCount   int     `json:"client_count"`
+			SessionCount  int     `json:"session_count"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode objects response: %v", err)
+	}
+	if len(body.Objects) != 1 {
+		t.Fatalf("expected one attributed object, got %#v", body.Objects)
+	}
+	if body.Objects[0].Label != "api.example.com" || body.Objects[0].LabelSource != "tls_sni" {
+		t.Fatalf("unexpected object label: %#v", body.Objects[0])
+	}
+	if body.Objects[0].UploadBytes != 4096 || body.Objects[0].DownloadBytes != 2048 || body.Objects[0].ClientCount != 1 || body.Objects[0].SessionCount != 1 {
+		t.Fatalf("unexpected object counters: %#v", body.Objects[0])
+	}
+}
+
+func TestAnalysisReconcileAPIReturnsMatchedAndUnmatchedSessions(t *testing.T) {
+	queryer := &fakeBucketQueryer{
+		flowSessions: []traffic.FlowSession{
+			{
+				ID:            1,
+				Viewpoint:     traffic.ViewpointWAN,
+				Protocol:      "tcp",
+				LocalIP:       trafficMustAddr("198.51.100.10"),
+				LocalPort:     53000,
+				RemoteIP:      trafficMustAddr("203.0.113.9"),
+				RemotePort:    443,
+				FirstSeen:     time.Date(2026, 4, 17, 10, 0, 1, 0, time.UTC),
+				LastSeen:      time.Date(2026, 4, 17, 10, 0, 20, 0, time.UTC),
+				UploadBytes:   4096,
+				DownloadBytes: 2048,
+				Packets:       12,
+			},
+			{
+				ID:            2,
+				Viewpoint:     traffic.ViewpointLAN,
+				Protocol:      "tcp",
+				LocalIP:       trafficMustAddr("192.168.248.22"),
+				LocalPort:     53000,
+				RemoteIP:      trafficMustAddr("203.0.113.9"),
+				RemotePort:    443,
+				ClientIP:      trafficMustAddr("192.168.248.22"),
+				ClientMAC:     "00:11:22:33:44:55",
+				FirstSeen:     time.Date(2026, 4, 17, 10, 0, 2, 0, time.UTC),
+				LastSeen:      time.Date(2026, 4, 17, 10, 0, 19, 0, time.UTC),
+				UploadBytes:   4000,
+				DownloadBytes: 2048,
+				Packets:       11,
+			},
+			{
+				ID:            3,
+				Viewpoint:     traffic.ViewpointWAN,
+				Protocol:      "udp",
+				LocalIP:       trafficMustAddr("198.51.100.10"),
+				LocalPort:     52000,
+				RemoteIP:      trafficMustAddr("198.51.100.8"),
+				RemotePort:    3478,
+				FirstSeen:     time.Date(2026, 4, 17, 10, 1, 0, 0, time.UTC),
+				LastSeen:      time.Date(2026, 4, 17, 10, 1, 30, 0, time.UTC),
+				UploadBytes:   8192,
+				DownloadBytes: 1024,
+				Packets:       13,
+			},
+		},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis/reconcile?from=2026-04-17%2010:00&to=2026-04-17%2010:10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Rows []struct {
+			WANSessionID              int64   `json:"wan_session_id"`
+			LANSessionID              int64   `json:"lan_session_id"`
+			Status                    string  `json:"status"`
+			Reason                    string  `json:"reason"`
+			Confidence                float64 `json:"confidence"`
+			UnattributedUploadBytes   int64   `json:"unattributed_upload_bytes"`
+			UnattributedDownloadBytes int64   `json:"unattributed_download_bytes"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode reconcile response: %v", err)
+	}
+	if len(body.Rows) != 2 {
+		t.Fatalf("expected two reconcile rows, got %#v", body.Rows)
+	}
+	if body.Rows[0].WANSessionID != 1 || body.Rows[0].LANSessionID != 2 || body.Rows[0].Status != "matched" {
+		t.Fatalf("unexpected matched row: %#v", body.Rows[0])
+	}
+	if body.Rows[1].WANSessionID != 3 || body.Rows[1].Status != "unmatched" || body.Rows[1].Reason == "" {
+		t.Fatalf("unexpected unmatched row: %#v", body.Rows[1])
 	}
 }
 

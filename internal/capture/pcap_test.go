@@ -1,6 +1,8 @@
 package capture
 
 import (
+	"bytes"
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"testing"
@@ -203,4 +205,197 @@ func TestExtractPacketLearnsMDNSARecordName(t *testing.T) {
 	if observation.Name != "nas-box" || observation.Source != "mdns" {
 		t.Fatalf("unexpected observation: %#v", observation)
 	}
+}
+
+func TestExtractPacketCapturesDNSAnswerObservations(t *testing.T) {
+	srcMAC := net.HardwareAddr{0, 17, 34, 51, 68, 85}
+	udp := &layers.UDP{
+		SrcPort: 53,
+		DstPort: 53000,
+	}
+	ip := &layers.IPv4{
+		Version:  4,
+		TTL:      64,
+		Protocol: layers.IPProtocolUDP,
+		SrcIP:    net.IP{192, 168, 248, 1},
+		DstIP:    net.IP{192, 168, 248, 22},
+	}
+	if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
+		t.Fatalf("set checksum layer: %v", err)
+	}
+
+	dns := &layers.DNS{
+		ID:      0x1234,
+		QR:      true,
+		RD:      true,
+		RA:      true,
+		QDCount: 1,
+		ANCount: 1,
+		Questions: []layers.DNSQuestion{
+			{
+				Name:  []byte("api.example.com"),
+				Type:  layers.DNSTypeA,
+				Class: layers.DNSClassIN,
+			},
+		},
+		Answers: []layers.DNSResourceRecord{
+			{
+				Name:  []byte("api.example.com"),
+				Type:  layers.DNSTypeA,
+				Class: layers.DNSClassIN,
+				TTL:   300,
+				IP:    net.IP{203, 0, 113, 9},
+			},
+		},
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	err := gopacket.SerializeLayers(
+		buffer,
+		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+		&layers.Ethernet{
+			SrcMAC:       srcMAC,
+			DstMAC:       net.HardwareAddr{6, 7, 8, 9, 10, 11},
+			EthernetType: layers.EthernetTypeIPv4,
+		},
+		ip,
+		udp,
+		dns,
+	)
+	if err != nil {
+		t.Fatalf("serialize packet: %v", err)
+	}
+
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet.Metadata().CaptureInfo.Timestamp = time.Unix(100, 0)
+	packet.Metadata().CaptureInfo.Length = len(buffer.Bytes())
+
+	parsed, ok := ExtractPacket(packet)
+	if !ok {
+		t.Fatal("expected packet to parse")
+	}
+	if len(parsed.DNSObservations) != 1 {
+		t.Fatalf("expected one DNS observation, got %#v", parsed.DNSObservations)
+	}
+	observation := parsed.DNSObservations[0]
+	if observation.ClientIP != netip.MustParseAddr("192.168.248.22") || observation.ClientMAC != "06:07:08:09:0a:0b" {
+		t.Fatalf("unexpected DNS client identity: %#v", observation)
+	}
+	if observation.Name != "api.example.com" || observation.AnswerIP != netip.MustParseAddr("203.0.113.9") {
+		t.Fatalf("unexpected DNS observation payload: %#v", observation)
+	}
+	if observation.TTL != 300 || observation.Source != "dns" {
+		t.Fatalf("unexpected DNS observation metadata: %#v", observation)
+	}
+}
+
+func TestExtractPacketCapturesTLSSNIAndALPN(t *testing.T) {
+	tcp := &layers.TCP{
+		SrcPort: 53000,
+		DstPort: 443,
+		ACK:     true,
+		PSH:     true,
+	}
+	ip := &layers.IPv4{
+		Version:  4,
+		TTL:      64,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    net.IP{192, 168, 248, 22},
+		DstIP:    net.IP{203, 0, 113, 9},
+	}
+	if err := tcp.SetNetworkLayerForChecksum(ip); err != nil {
+		t.Fatalf("set checksum layer: %v", err)
+	}
+
+	buffer := gopacket.NewSerializeBuffer()
+	err := gopacket.SerializeLayers(
+		buffer,
+		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
+		&layers.Ethernet{
+			SrcMAC:       net.HardwareAddr{0, 17, 34, 51, 68, 85},
+			DstMAC:       net.HardwareAddr{6, 7, 8, 9, 10, 11},
+			EthernetType: layers.EthernetTypeIPv4,
+		},
+		ip,
+		tcp,
+		gopacket.Payload(testTLSClientHello("api.example.com", "h2")),
+	)
+	if err != nil {
+		t.Fatalf("serialize packet: %v", err)
+	}
+
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet.Metadata().CaptureInfo.Timestamp = time.Unix(100, 0)
+	packet.Metadata().CaptureInfo.Length = len(buffer.Bytes())
+
+	parsed, ok := ExtractPacket(packet)
+	if !ok {
+		t.Fatal("expected packet to parse")
+	}
+	if len(parsed.TLSObservations) != 1 {
+		t.Fatalf("expected one TLS observation, got %#v", parsed.TLSObservations)
+	}
+	observation := parsed.TLSObservations[0]
+	if observation.ServerName != "api.example.com" || observation.ALPN != "h2" {
+		t.Fatalf("unexpected TLS observation: %#v", observation)
+	}
+	if observation.RemoteIP != netip.MustParseAddr("203.0.113.9") || observation.RemotePort != 443 {
+		t.Fatalf("unexpected TLS remote endpoint: %#v", observation)
+	}
+}
+
+func testTLSClientHello(serverName, alpn string) []byte {
+	serverNameBytes := []byte(serverName)
+	alpnBytes := []byte(alpn)
+
+	var sniBody bytes.Buffer
+	_ = binary.Write(&sniBody, binary.BigEndian, uint16(len(serverNameBytes)+3))
+	sniBody.WriteByte(0)
+	_ = binary.Write(&sniBody, binary.BigEndian, uint16(len(serverNameBytes)))
+	sniBody.Write(serverNameBytes)
+	sniData := sniBody.Bytes()
+
+	var sniExt bytes.Buffer
+	_ = binary.Write(&sniExt, binary.BigEndian, uint16(0))
+	_ = binary.Write(&sniExt, binary.BigEndian, uint16(len(sniData)))
+	sniExt.Write(sniData)
+
+	var alpnData bytes.Buffer
+	_ = binary.Write(&alpnData, binary.BigEndian, uint16(len(alpnBytes)+1))
+	alpnData.WriteByte(byte(len(alpnBytes)))
+	alpnData.Write(alpnBytes)
+
+	var alpnExt bytes.Buffer
+	_ = binary.Write(&alpnExt, binary.BigEndian, uint16(16))
+	_ = binary.Write(&alpnExt, binary.BigEndian, uint16(alpnData.Len()))
+	alpnExt.Write(alpnData.Bytes())
+
+	extensions := append(sniExt.Bytes(), alpnExt.Bytes()...)
+
+	var hello bytes.Buffer
+	hello.Write([]byte{0x03, 0x03})
+	hello.Write(bytes.Repeat([]byte{0x01}, 32))
+	hello.WriteByte(0)
+	_ = binary.Write(&hello, binary.BigEndian, uint16(2))
+	hello.Write([]byte{0x13, 0x01})
+	hello.WriteByte(1)
+	hello.WriteByte(0)
+	_ = binary.Write(&hello, binary.BigEndian, uint16(len(extensions)))
+	hello.Write(extensions)
+
+	helloBytes := hello.Bytes()
+
+	var handshake bytes.Buffer
+	handshake.WriteByte(0x01)
+	handshake.Write([]byte{byte(len(helloBytes) >> 16), byte(len(helloBytes) >> 8), byte(len(helloBytes))})
+	handshake.Write(helloBytes)
+
+	handshakeBytes := handshake.Bytes()
+
+	var record bytes.Buffer
+	record.WriteByte(0x16)
+	record.Write([]byte{0x03, 0x01})
+	_ = binary.Write(&record, binary.BigEndian, uint16(len(handshakeBytes)))
+	record.Write(handshakeBytes)
+	return record.Bytes()
 }

@@ -232,6 +232,8 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	clientClassifier := traffic.NewLANClientClassifier(localNetworks)
 	clientAggregator := traffic.NewClientAggregator(cfg.BucketDuration())
 	endpointAggregator := traffic.NewEndpointAggregator(cfg.BucketDuration())
+	wanFlowTracker := traffic.NewFlowTracker(30 * time.Second)
+	lanFlowTracker := traffic.NewFlowTracker(30 * time.Second)
 
 	var consoleMeter *traffic.Meter
 	if output.enabled {
@@ -290,6 +292,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 			}
 			aggregator.Add(packet, direction)
 			wanEndpointAggregator.Add(packet, direction)
+			wanFlowTracker.AddWANPacket(packet, direction)
+			if len(packet.TLSObservations) > 0 {
+				_ = st.UpsertTLSObservations(context.Background(), withTLSViewpoint(packet.TLSObservations, traffic.ViewpointWAN))
+			}
 		})
 	}()
 	if lanRunner != nil {
@@ -299,9 +305,16 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 					nameCache.Observe(packet.NameObservations)
 					_ = st.UpsertClientNames(context.Background(), packet.NameObservations)
 				}
+				if len(packet.DNSObservations) > 0 {
+					_ = st.UpsertDNSObservations(context.Background(), packet.DNSObservations)
+				}
+				if len(packet.TLSObservations) > 0 {
+					_ = st.UpsertTLSObservations(context.Background(), withTLSViewpoint(packet.TLSObservations, traffic.ViewpointLAN))
+				}
 				if client, ok := clientClassifier.Classify(packet); ok {
 					clientAggregator.Add(packet, client)
 					endpointAggregator.Add(packet, client)
+					lanFlowTracker.AddLANPacket(packet, client)
 					if webClientMeter != nil {
 						webClientMeter.AddPacket(client, packet)
 					}
@@ -341,10 +354,10 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 		select {
 		case <-ctx.Done():
 			cancelRunners()
-			return flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator)
+			return flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, wanFlowTracker, lanFlowTracker)
 		case err := <-errCh:
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, wanFlowTracker, lanFlowTracker); flushErr != nil {
 				return flushErr
 			}
 			return err
@@ -353,12 +366,12 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 				continue
 			}
 			cancelRunners()
-			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator); flushErr != nil {
+			if flushErr := flushAll(context.Background(), st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, wanFlowTracker, lanFlowTracker); flushErr != nil {
 				return flushErr
 			}
 			return err
 		case <-flushTicker.C:
-			if err := flushCompleteBuckets(ctx, st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, cfg.BucketDuration()); err != nil {
+			if err := flushCompleteBuckets(ctx, st, aggregator, wanEndpointAggregator, clientAggregator, endpointAggregator, wanFlowTracker, lanFlowTracker, cfg.BucketDuration()); err != nil {
 				return err
 			}
 		case now := <-retentionTicker.C:
@@ -402,7 +415,7 @@ func buildWANIPManager(cfg config.Config) (*wanip.Manager, error) {
 	return wanip.NewManager(wanip.NewChainProvider(providers...), cfg.WANIPRefreshInterval()), nil
 }
 
-func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, bucketDuration time.Duration) error {
+func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, wanFlowTracker *traffic.FlowTracker, lanFlowTracker *traffic.FlowTracker, bucketDuration time.Duration) error {
 	cutoff := time.Now().UTC().Truncate(bucketDuration)
 	if err := st.UpsertBuckets(ctx, aggregator.DrainBefore(cutoff)); err != nil {
 		return err
@@ -413,10 +426,16 @@ func flushCompleteBuckets(ctx context.Context, st *store.SQLiteStore, aggregator
 	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainBefore(cutoff)); err != nil {
 		return err
 	}
-	return st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainBefore(cutoff))
+	if err := st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainBefore(cutoff)); err != nil {
+		return err
+	}
+	if err := st.InsertFlowSessions(ctx, wanFlowTracker.DrainExpired(time.Now().UTC())); err != nil {
+		return err
+	}
+	return st.InsertFlowSessions(ctx, lanFlowTracker.DrainExpired(time.Now().UTC()))
 }
 
-func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator) error {
+func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Aggregator, wanEndpointAggregator *traffic.WANEndpointAggregator, clientAggregator *traffic.ClientAggregator, endpointAggregator *traffic.EndpointAggregator, wanFlowTracker *traffic.FlowTracker, lanFlowTracker *traffic.FlowTracker) error {
 	if err := st.UpsertBuckets(ctx, aggregator.DrainAll()); err != nil {
 		return err
 	}
@@ -426,7 +445,25 @@ func flushAll(ctx context.Context, st *store.SQLiteStore, aggregator *traffic.Ag
 	if err := st.UpsertClientBuckets(ctx, clientAggregator.DrainAll()); err != nil {
 		return err
 	}
-	return st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainAll())
+	if err := st.UpsertEndpointBuckets(ctx, endpointAggregator.DrainAll()); err != nil {
+		return err
+	}
+	if err := st.InsertFlowSessions(ctx, wanFlowTracker.DrainAll()); err != nil {
+		return err
+	}
+	return st.InsertFlowSessions(ctx, lanFlowTracker.DrainAll())
+}
+
+func withTLSViewpoint(observations []traffic.TLSObservation, viewpoint traffic.Viewpoint) []traffic.TLSObservation {
+	if len(observations) == 0 {
+		return nil
+	}
+	result := make([]traffic.TLSObservation, len(observations))
+	copy(result, observations)
+	for index := range result {
+		result[index].Viewpoint = viewpoint
+	}
+	return result
 }
 
 func runQuery(args []string) error {

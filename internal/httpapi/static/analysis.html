@@ -244,6 +244,59 @@
         </div>
       </section>
 
+      <section class="chartPanel" aria-label="访问对象归因">
+        <div class="chartTitle">
+          <h2>访问对象</h2>
+          <p>优先用 TLS SNI，其次用 DNS 应答，把远端 IP 解释成更接近业务对象的标签</p>
+        </div>
+        <div class="tableWrap">
+          <table class="remoteTable">
+            <thead>
+              <tr>
+                <th>对象</th>
+                <th>来源</th>
+                <th>协议</th>
+                <th>远端</th>
+                <th>上传</th>
+                <th>下载</th>
+                <th>会话</th>
+                <th>客户端</th>
+              </tr>
+            </thead>
+            <tbody id="objectsBody">
+              <tr><td colspan="8">暂无访问对象数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="chartPanel" aria-label="WAN LAN 对账">
+        <div class="chartTitle">
+          <h2>WAN/LAN 对账</h2>
+          <p>按同一远端 IP、端口、协议和时间重叠匹配会话，解释哪些流量能对上、哪些对不上</p>
+        </div>
+        <div class="tableWrap">
+          <table class="remoteTable">
+            <thead>
+              <tr>
+                <th>状态</th>
+                <th>原因</th>
+                <th>WAN 会话</th>
+                <th>LAN 会话</th>
+                <th>远端</th>
+                <th>协议</th>
+                <th>未归属上传</th>
+                <th>未归属下载</th>
+                <th>置信度</th>
+              </tr>
+            </thead>
+            <tbody id="reconcileBody">
+              <tr><td colspan="9">暂无对账数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="chartPanel" aria-label="数据边界">
         <div class="chartTitle">
           <h2>数据边界</h2>

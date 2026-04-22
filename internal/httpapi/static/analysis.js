@@ -22,6 +22,8 @@ const elements = {
   wanRemoteEndpointsBody: document.querySelector("#wanRemoteEndpointsBody"),
   wanUDPRemoteEndpointsBody: document.querySelector("#wanUDPRemoteEndpointsBody"),
   wanUDPClientGapsBody: document.querySelector("#wanUDPClientGapsBody"),
+  objectsBody: document.querySelector("#objectsBody"),
+  reconcileBody: document.querySelector("#reconcileBody"),
   limitationsBody: document.querySelector("#limitationsBody"),
 };
 
@@ -153,16 +155,35 @@ function buildAnalysisURL() {
   return `/api/analysis?${buildRangeParams().toString()}`;
 }
 
+function buildObjectsURL() {
+  return `/api/analysis/objects?${buildRangeParams().toString()}`;
+}
+
+function buildReconcileURL() {
+  return `/api/analysis/reconcile?${buildRangeParams().toString()}`;
+}
+
+async function fetchJSON(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
 async function loadAnalysis() {
   elements.status.textContent = "分析中";
   elements.status.style.background = "var(--accent)";
 
   try {
-    const response = await fetch(buildAnalysisURL(), { headers: { Accept: "application/json" } });
-    if (!response.ok) {
-      throw new Error(await response.text());
-    }
-    renderAnalysis(await response.json());
+    const [analysis, objects, reconcile] = await Promise.all([
+      fetchJSON(buildAnalysisURL()),
+      fetchJSON(buildObjectsURL()),
+      fetchJSON(buildReconcileURL()),
+    ]);
+    renderAnalysis(analysis);
+    renderObjects(objects.objects || []);
+    renderReconcile(reconcile.rows || []);
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";
   } catch (error) {
@@ -315,6 +336,49 @@ function renderLimitations(limitations) {
     return;
   }
   elements.limitationsBody.innerHTML = limitations.map((item) => `<li>${escapeHTML(item)}</li>`).join("");
+}
+
+function renderObjects(rows) {
+  if (rows.length === 0) {
+    elements.objectsBody.innerHTML = `<tr><td colspan="8">暂无访问对象数据</td></tr>`;
+    return;
+  }
+  elements.objectsBody.innerHTML = rows
+    .map((row) => `
+      <tr>
+        <td>${escapeHTML(row.label || "-")}</td>
+        <td>${escapeHTML(row.label_source || "-")}</td>
+        <td>${escapeHTML(row.protocol || "-")}</td>
+        <td>${escapeHTML(row.remote_ip || "-")}${row.remote_port ? `:${Number(row.remote_port).toLocaleString()}` : ""}</td>
+        <td>${formatBytes(row.upload_bytes)}</td>
+        <td>${formatBytes(row.download_bytes)}</td>
+        <td>${Number(row.session_count || 0).toLocaleString()}</td>
+        <td>${Number(row.client_count || 0).toLocaleString()}</td>
+      </tr>
+    `)
+    .join("");
+}
+
+function renderReconcile(rows) {
+  if (rows.length === 0) {
+    elements.reconcileBody.innerHTML = `<tr><td colspan="9">暂无对账数据</td></tr>`;
+    return;
+  }
+  elements.reconcileBody.innerHTML = rows
+    .map((row) => `
+      <tr>
+        <td>${escapeHTML(row.status || "-")}</td>
+        <td>${escapeHTML(row.reason || "-")}</td>
+        <td>${row.wan_session_id ? Number(row.wan_session_id).toLocaleString() : "-"}</td>
+        <td>${row.lan_session_id ? Number(row.lan_session_id).toLocaleString() : "-"}</td>
+        <td>${escapeHTML(row.remote_ip || "-")}${row.remote_port ? `:${Number(row.remote_port).toLocaleString()}` : ""}</td>
+        <td>${escapeHTML(row.protocol || "-")}</td>
+        <td>${formatBytes(row.unattributed_upload_bytes)}</td>
+        <td>${formatBytes(row.unattributed_download_bytes)}</td>
+        <td>${(Number(row.confidence || 0) * 100).toFixed(0)}%</td>
+      </tr>
+    `)
+    .join("");
 }
 
 function escapeHTML(value) {

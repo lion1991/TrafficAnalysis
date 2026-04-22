@@ -226,6 +226,57 @@ CREATE TABLE IF NOT EXISTS client_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_client_aliases_mac ON client_aliases(client_mac);
 CREATE INDEX IF NOT EXISTS idx_client_aliases_ip ON client_aliases(client_ip);
+CREATE TABLE IF NOT EXISTS dns_observations (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	observed_at INTEGER NOT NULL,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	name TEXT NOT NULL,
+	record_type TEXT NOT NULL,
+	answer_ip TEXT NOT NULL,
+	ttl INTEGER NOT NULL,
+	source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dns_observations_time ON dns_observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_dns_observations_answer ON dns_observations(answer_ip, observed_at);
+CREATE TABLE IF NOT EXISTS tls_observations (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	observed_at INTEGER NOT NULL,
+	viewpoint TEXT NOT NULL,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	remote_ip TEXT NOT NULL,
+	remote_port INTEGER NOT NULL,
+	server_name TEXT NOT NULL,
+	alpn TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tls_observations_time ON tls_observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_tls_observations_remote ON tls_observations(remote_ip, remote_port, observed_at);
+CREATE TABLE IF NOT EXISTS flow_sessions (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	viewpoint TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	local_ip TEXT NOT NULL,
+	local_port INTEGER NOT NULL,
+	remote_ip TEXT NOT NULL,
+	remote_port INTEGER NOT NULL,
+	client_ip TEXT NOT NULL,
+	client_mac TEXT NOT NULL,
+	first_seen INTEGER NOT NULL,
+	last_seen INTEGER NOT NULL,
+	upload_bytes INTEGER NOT NULL,
+	download_bytes INTEGER NOT NULL,
+	packets INTEGER NOT NULL,
+	syn_seen INTEGER NOT NULL,
+	fin_seen INTEGER NOT NULL,
+	rst_seen INTEGER NOT NULL,
+	has_dns_evidence INTEGER NOT NULL,
+	has_tls_evidence INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_flow_sessions_time ON flow_sessions(first_seen, last_seen);
+CREATE INDEX IF NOT EXISTS idx_flow_sessions_remote ON flow_sessions(remote_ip, remote_port, protocol, first_seen);
 `)
 	return err
 }
@@ -473,6 +524,135 @@ ON CONFLICT(client_key) DO UPDATE SET
 	updated_at = excluded.updated_at;
 `, clientKey, clientIP, clientMAC, alias, time.Now().UTC().Unix())
 	return err
+}
+
+func (s *SQLiteStore) UpsertDNSObservations(ctx context.Context, observations []traffic.DNSObservation) error {
+	if len(observations) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO dns_observations (observed_at, client_ip, client_mac, name, record_type, answer_ip, ttl, source)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, observation := range observations {
+		if !observation.ClientIP.IsValid() || !observation.AnswerIP.IsValid() || observation.Name == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(
+			ctx,
+			observation.ObservedAt.UTC().Unix(),
+			observation.ClientIP.String(),
+			observation.ClientMAC,
+			observation.Name,
+			observation.RecordType,
+			observation.AnswerIP.String(),
+			observation.TTL,
+			observation.Source,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) UpsertTLSObservations(ctx context.Context, observations []traffic.TLSObservation) error {
+	if len(observations) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO tls_observations (observed_at, viewpoint, client_ip, client_mac, remote_ip, remote_port, server_name, alpn, protocol, source)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, observation := range observations {
+		if !observation.RemoteIP.IsValid() || observation.ServerName == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(
+			ctx,
+			observation.ObservedAt.UTC().Unix(),
+			string(observation.Viewpoint),
+			observation.ClientIP.String(),
+			observation.ClientMAC,
+			observation.RemoteIP.String(),
+			int(observation.RemotePort),
+			observation.ServerName,
+			observation.ALPN,
+			observation.Protocol,
+			observation.Source,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) InsertFlowSession(ctx context.Context, session traffic.FlowSession) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+INSERT INTO flow_sessions (
+	viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
+	first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
+	has_dns_evidence, has_tls_evidence
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`,
+		string(session.Viewpoint),
+		session.Protocol,
+		session.LocalIP.String(),
+		int(session.LocalPort),
+		session.RemoteIP.String(),
+		int(session.RemotePort),
+		session.ClientIP.String(),
+		session.ClientMAC,
+		session.FirstSeen.UTC().Unix(),
+		session.LastSeen.UTC().Unix(),
+		session.UploadBytes,
+		session.DownloadBytes,
+		session.Packets,
+		boolToInt(session.SYNSeen),
+		boolToInt(session.FINSeen),
+		boolToInt(session.RSTSeen),
+		boolToInt(session.HasDNSEvidence),
+		boolToInt(session.HasTLSEvidence),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *SQLiteStore) InsertFlowSessions(ctx context.Context, sessions []traffic.FlowSession) error {
+	for _, session := range sessions {
+		if _, err := s.InsertFlowSession(ctx, session); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func clientAliasKey(clientIP, clientMAC string) string {
@@ -827,6 +1007,149 @@ ORDER BY bucket_start ASC, remote_ip ASC, remote_port ASC, direction ASC, protoc
 	return result, nil
 }
 
+func (s *SQLiteStore) QueryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT observed_at, client_ip, client_mac, name, record_type, answer_ip, ttl, source
+FROM dns_observations
+WHERE observed_at >= ? AND observed_at < ?
+ORDER BY observed_at ASC, name ASC;
+`, from.UTC().Unix(), to.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []traffic.DNSObservation
+	for rows.Next() {
+		var observedAt int64
+		var clientIPText string
+		var clientMAC string
+		var name string
+		var recordType string
+		var answerIPText string
+		var ttl uint32
+		var source string
+		if err := rows.Scan(&observedAt, &clientIPText, &clientMAC, &name, &recordType, &answerIPText, &ttl, &source); err != nil {
+			return nil, err
+		}
+		clientIP, err := parseOptionalAddr(clientIPText)
+		if err != nil {
+			return nil, err
+		}
+		answerIP, err := netip.ParseAddr(answerIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, traffic.DNSObservation{
+			ObservedAt: time.Unix(observedAt, 0).UTC(),
+			ClientIP:   clientIP,
+			ClientMAC:  clientMAC,
+			Name:       name,
+			RecordType: recordType,
+			AnswerIP:   answerIP,
+			TTL:        ttl,
+			Source:     source,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryTLSObservations(ctx context.Context, from, to time.Time) ([]traffic.TLSObservation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT observed_at, viewpoint, client_ip, client_mac, remote_ip, remote_port, server_name, alpn, protocol, source
+FROM tls_observations
+WHERE observed_at >= ? AND observed_at < ?
+ORDER BY observed_at ASC, remote_ip ASC, remote_port ASC;
+`, from.UTC().Unix(), to.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []traffic.TLSObservation
+	for rows.Next() {
+		var observedAt int64
+		var viewpoint string
+		var clientIPText string
+		var clientMAC string
+		var remoteIPText string
+		var remotePort int
+		var serverName string
+		var alpn string
+		var protocol string
+		var source string
+		if err := rows.Scan(&observedAt, &viewpoint, &clientIPText, &clientMAC, &remoteIPText, &remotePort, &serverName, &alpn, &protocol, &source); err != nil {
+			return nil, err
+		}
+		clientIP, err := parseOptionalAddr(clientIPText)
+		if err != nil {
+			return nil, err
+		}
+		remoteIP, err := netip.ParseAddr(remoteIPText)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, traffic.TLSObservation{
+			ObservedAt: time.Unix(observedAt, 0).UTC(),
+			Viewpoint:  traffic.Viewpoint(viewpoint),
+			ClientIP:   clientIP,
+			ClientMAC:  clientMAC,
+			RemoteIP:   remoteIP,
+			RemotePort: uint16(remotePort),
+			ServerName: serverName,
+			ALPN:       alpn,
+			Protocol:   protocol,
+			Source:     source,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryFlowSessions(ctx context.Context, from, to time.Time) ([]traffic.FlowSession, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
+       first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
+       has_dns_evidence, has_tls_evidence
+FROM flow_sessions
+WHERE last_seen >= ? AND first_seen < ?
+ORDER BY first_seen ASC, id ASC;
+`, from.UTC().Unix(), to.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []traffic.FlowSession
+	for rows.Next() {
+		session, err := scanFlowSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryFlowSessionByID(ctx context.Context, id int64) (traffic.FlowSession, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, viewpoint, protocol, local_ip, local_port, remote_ip, remote_port, client_ip, client_mac,
+       first_seen, last_seen, upload_bytes, download_bytes, packets, syn_seen, fin_seen, rst_seen,
+       has_dns_evidence, has_tls_evidence
+FROM flow_sessions
+WHERE id = ?;
+`, id)
+	return scanFlowSession(row)
+}
+
 func (s *SQLiteStore) CompactAndPrune(ctx context.Context, now time.Time, policy RetentionPolicy) error {
 	if policy.MinuteRetention <= 0 && policy.HourlyRetention <= 0 {
 		return nil
@@ -962,4 +1285,89 @@ ON CONFLICT(remote_ip, remote_port, direction, protocol) DO UPDATE SET
 		}
 	}
 	return nil
+}
+
+type flowSessionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanFlowSession(scanner flowSessionScanner) (traffic.FlowSession, error) {
+	var session traffic.FlowSession
+	var viewpoint string
+	var localIPText string
+	var remoteIPText string
+	var clientIPText string
+	var localPort int
+	var remotePort int
+	var firstSeen int64
+	var lastSeen int64
+	var synSeen int
+	var finSeen int
+	var rstSeen int
+	var hasDNSEvidence int
+	var hasTLSEvidence int
+	if err := scanner.Scan(
+		&session.ID,
+		&viewpoint,
+		&session.Protocol,
+		&localIPText,
+		&localPort,
+		&remoteIPText,
+		&remotePort,
+		&clientIPText,
+		&session.ClientMAC,
+		&firstSeen,
+		&lastSeen,
+		&session.UploadBytes,
+		&session.DownloadBytes,
+		&session.Packets,
+		&synSeen,
+		&finSeen,
+		&rstSeen,
+		&hasDNSEvidence,
+		&hasTLSEvidence,
+	); err != nil {
+		return traffic.FlowSession{}, err
+	}
+	localIP, err := parseOptionalAddr(localIPText)
+	if err != nil {
+		return traffic.FlowSession{}, err
+	}
+	remoteIP, err := parseOptionalAddr(remoteIPText)
+	if err != nil {
+		return traffic.FlowSession{}, err
+	}
+	clientIP, err := parseOptionalAddr(clientIPText)
+	if err != nil {
+		return traffic.FlowSession{}, err
+	}
+	session.Viewpoint = traffic.Viewpoint(viewpoint)
+	session.LocalIP = localIP
+	session.LocalPort = uint16(localPort)
+	session.RemoteIP = remoteIP
+	session.RemotePort = uint16(remotePort)
+	session.ClientIP = clientIP
+	session.FirstSeen = time.Unix(firstSeen, 0).UTC()
+	session.LastSeen = time.Unix(lastSeen, 0).UTC()
+	session.SYNSeen = synSeen != 0
+	session.FINSeen = finSeen != 0
+	session.RSTSeen = rstSeen != 0
+	session.HasDNSEvidence = hasDNSEvidence != 0
+	session.HasTLSEvidence = hasTLSEvidence != 0
+	return session, nil
+}
+
+func parseOptionalAddr(value string) (netip.Addr, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return netip.Addr{}, nil
+	}
+	return netip.ParseAddr(value)
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
