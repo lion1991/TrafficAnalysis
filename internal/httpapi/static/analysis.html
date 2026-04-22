@@ -106,11 +106,11 @@
             <table>
               <thead>
                 <tr>
-                  <th>名称</th>
-                  <th>客户端 IP</th>
-                  <th>上传</th>
-                  <th>下载</th>
-                  <th>包</th>
+                  <th><button class="sortButton" type="button" data-sort-table="uploadClients" data-sort-field="display_name">名称</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="uploadClients" data-sort-field="client_ip">客户端 IP</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="uploadClients" data-sort-field="upload_bytes">上传</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="uploadClients" data-sort-field="download_bytes">下载</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="uploadClients" data-sort-field="packets">包</button></th>
                 </tr>
               </thead>
               <tbody id="uploadClientsBody">
@@ -125,11 +125,11 @@
             <table>
               <thead>
                 <tr>
-                  <th>名称</th>
-                  <th>客户端 IP</th>
-                  <th>下载</th>
-                  <th>上传</th>
-                  <th>包</th>
+                  <th><button class="sortButton" type="button" data-sort-table="downloadClients" data-sort-field="display_name">名称</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="downloadClients" data-sort-field="client_ip">客户端 IP</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="downloadClients" data-sort-field="download_bytes">下载</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="downloadClients" data-sort-field="upload_bytes">上传</button></th>
+                  <th><button class="sortButton" type="button" data-sort-table="downloadClients" data-sort-field="packets">包</button></th>
                 </tr>
               </thead>
               <tbody id="downloadClientsBody">
@@ -149,14 +149,14 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>远程 IP</th>
-                <th>端口</th>
-                <th>协议</th>
-                <th>上传</th>
-                <th>下载</th>
-                <th>总计</th>
-                <th>客户端</th>
-                <th>包</th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="remote_ip">远程 IP</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="remote_port">端口</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="upload_bytes">上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="download_bytes">下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="total_bytes">总计</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="client_count">客户端</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="remoteEndpoints" data-sort-field="packets">包</button></th>
               </tr>
             </thead>
             <tbody id="remoteEndpointsBody">
@@ -175,13 +175,13 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>远程 IP</th>
-                <th>端口</th>
-                <th>协议</th>
-                <th>上传</th>
-                <th>下载</th>
-                <th>总计</th>
-                <th>包</th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="remote_ip">远程 IP</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="remote_port">端口</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="upload_bytes">上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="download_bytes">下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="total_bytes">总计</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanRemoteEndpoints" data-sort-field="packets">包</button></th>
               </tr>
             </thead>
             <tbody id="wanRemoteEndpointsBody">
@@ -200,13 +200,13 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>远程 IP</th>
-                <th>端口</th>
-                <th>协议</th>
-                <th>上传</th>
-                <th>下载</th>
-                <th>总计</th>
-                <th>包</th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="remote_ip">远程 IP</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="remote_port">端口</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="upload_bytes">上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="download_bytes">下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="total_bytes">总计</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPRemoteEndpoints" data-sort-field="packets">包</button></th>
               </tr>
             </thead>
             <tbody id="wanUDPRemoteEndpointsBody">
@@ -225,16 +225,16 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>远程 IP</th>
-                <th>端口</th>
-                <th>协议</th>
-                <th>WAN 上传</th>
-                <th>客户端上传</th>
-                <th>未归属上传</th>
-                <th>WAN 下载</th>
-                <th>客户端下载</th>
-                <th>未归属下载</th>
-                <th>客户端</th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="remote_ip">远程 IP</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="remote_port">端口</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="wan_upload_bytes">WAN 上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="client_upload_bytes">客户端上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="unattributed_upload_bytes">未归属上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="wan_download_bytes">WAN 下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="client_download_bytes">客户端下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="unattributed_download_bytes">未归属下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="wanUDPClientGaps" data-sort-field="client_count">客户端</button></th>
               </tr>
             </thead>
             <tbody id="wanUDPClientGapsBody">
@@ -253,14 +253,14 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>对象</th>
-                <th>来源</th>
-                <th>协议</th>
-                <th>远端</th>
-                <th>上传</th>
-                <th>下载</th>
-                <th>会话</th>
-                <th>客户端</th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="label">对象</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="label_source">来源</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="remote_endpoint">远端</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="upload_bytes">上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="download_bytes">下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="session_count">会话</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="objects" data-sort-field="client_count">客户端</button></th>
               </tr>
             </thead>
             <tbody id="objectsBody">
@@ -279,15 +279,15 @@
           <table class="remoteTable">
             <thead>
               <tr>
-                <th>状态</th>
-                <th>原因</th>
-                <th>WAN 会话</th>
-                <th>LAN 会话</th>
-                <th>远端</th>
-                <th>协议</th>
-                <th>未归属上传</th>
-                <th>未归属下载</th>
-                <th>置信度</th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="status">状态</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="reason">原因</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="wan_session_id">WAN 会话</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="lan_session_id">LAN 会话</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="remote_endpoint">远端</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="protocol">协议</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="unattributed_upload_bytes">未归属上传</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="unattributed_download_bytes">未归属下载</button></th>
+                <th><button class="sortButton" type="button" data-sort-table="reconcile" data-sort-field="confidence">置信度</button></th>
               </tr>
             </thead>
             <tbody id="reconcileBody">

@@ -1084,3 +1084,35 @@ func TestWebPagesReconnectLiveStreamsAfterErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalysisPageSupportsPerTableColumnSorting(t *testing.T) {
+	html, err := embeddedStatic.ReadFile("static/analysis.html")
+	if err != nil {
+		t.Fatalf("read analysis.html: %v", err)
+	}
+	for _, want := range []string{
+		`data-sort-table="uploadClients"`,
+		`data-sort-table="downloadClients"`,
+		`data-sort-table="objects"`,
+		`data-sort-table="reconcile"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("expected analysis page to expose sortable table headers with %q", want)
+		}
+	}
+
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		"const defaultSortStates = {",
+		"function sortRows(table, rows)",
+		"function setSort(table, field)",
+		`document.querySelectorAll("[data-sort-table][data-sort-field]")`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis script to support per-table sorting with %q", want)
+		}
+	}
+}

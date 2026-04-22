@@ -29,6 +29,17 @@ const elements = {
 
 let refreshTimer = null;
 const ANALYSIS_PREFS_KEY = "ta_analysis_prefs";
+const defaultSortStates = {
+  uploadClients: { field: "upload_bytes", direction: "desc" },
+  downloadClients: { field: "download_bytes", direction: "desc" },
+  remoteEndpoints: { field: "total_bytes", direction: "desc" },
+  wanRemoteEndpoints: { field: "total_bytes", direction: "desc" },
+  wanUDPRemoteEndpoints: { field: "total_bytes", direction: "desc" },
+  wanUDPClientGaps: { field: "unattributed_total", direction: "desc" },
+  objects: { field: "total_bytes", direction: "desc" },
+  reconcile: { field: "unattributed_total", direction: "desc" },
+};
+let sortStates = cloneSortStates(defaultSortStates);
 
 function loadSavedPrefs() {
   try {
@@ -50,6 +61,7 @@ function savePrefs() {
         from: elements.from.value,
         to: elements.to.value,
         autoRefresh: elements.autoRefresh.checked,
+        sortStates,
       }),
     );
   } catch {}
@@ -66,8 +78,10 @@ function resetPrefs() {
   elements.from.value = "";
   elements.to.value = "";
   elements.autoRefresh.checked = false;
+  sortStates = cloneSortStates(defaultSortStates);
   syncControls();
   stopPolling();
+  renderSortHeaders();
   loadAnalysis();
 }
 
@@ -239,6 +253,8 @@ function renderSignals(signals) {
 }
 
 function renderClientRows(target, rows, mode) {
+  const table = mode === "upload" ? "uploadClients" : "downloadClients";
+  rows = sortRows(table, rows);
   if (rows.length === 0) {
     target.innerHTML = `<tr><td colspan="5">暂无客户端数据</td></tr>`;
     return;
@@ -261,6 +277,7 @@ function renderClientRows(target, rows, mode) {
 }
 
 function renderRemoteEndpoints(remote_endpoints) {
+  remote_endpoints = sortRows("remoteEndpoints", remote_endpoints);
   if (remote_endpoints.length === 0) {
     elements.remoteEndpointsBody.innerHTML = `<tr><td colspan="8">暂无远程 IP 数据</td></tr>`;
     return;
@@ -285,6 +302,8 @@ function renderRemoteEndpoints(remote_endpoints) {
 }
 
 function renderWANRemoteEndpoints(target, remoteEndpoints, emptyText) {
+  const table = target === elements.wanUDPRemoteEndpointsBody ? "wanUDPRemoteEndpoints" : "wanRemoteEndpoints";
+  remoteEndpoints = sortRows(table, remoteEndpoints);
   if (remoteEndpoints.length === 0) {
     target.innerHTML = `<tr><td colspan="7">${escapeHTML(emptyText)}</td></tr>`;
     return;
@@ -308,6 +327,7 @@ function renderWANRemoteEndpoints(target, remoteEndpoints, emptyText) {
 }
 
 function renderWANUDPClientGaps(rows) {
+  rows = sortRows("wanUDPClientGaps", rows);
   if (rows.length === 0) {
     elements.wanUDPClientGapsBody.innerHTML = `<tr><td colspan="10">暂无 WAN UDP 对照数据</td></tr>`;
     return;
@@ -339,6 +359,7 @@ function renderLimitations(limitations) {
 }
 
 function renderObjects(rows) {
+  rows = sortRows("objects", rows);
   if (rows.length === 0) {
     elements.objectsBody.innerHTML = `<tr><td colspan="8">暂无访问对象数据</td></tr>`;
     return;
@@ -360,6 +381,7 @@ function renderObjects(rows) {
 }
 
 function renderReconcile(rows) {
+  rows = sortRows("reconcile", rows);
   if (rows.length === 0) {
     elements.reconcileBody.innerHTML = `<tr><td colspan="9">暂无对账数据</td></tr>`;
     return;
@@ -388,6 +410,121 @@ function escapeHTML(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function cloneSortStates(source) {
+  return Object.fromEntries(Object.entries(source).map(([table, state]) => [table, { ...state }]));
+}
+
+function compareSortValues(left, right) {
+  if (typeof left === "number" || typeof right === "number") {
+    return Number(left || 0) - Number(right || 0);
+  }
+  return String(left || "").localeCompare(String(right || ""), "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+}
+
+function sortRows(table, rows) {
+  const state = sortStates[table] || defaultSortStates[table];
+  if (!state || !Array.isArray(rows)) {
+    return Array.from(rows || []);
+  }
+  return Array.from(rows).sort((left, right) => {
+    const result = compareSortValues(sortValue(table, left, state.field), sortValue(table, right, state.field));
+    if (result !== 0) {
+      return state.direction === "asc" ? result : -result;
+    }
+    return compareSortValues(sortValue(table, left, defaultSortStates[table].field), sortValue(table, right, defaultSortStates[table].field));
+  });
+}
+
+function sortValue(table, row, field) {
+  const totalBytes = Number(row.upload_bytes || 0) + Number(row.download_bytes || 0);
+  const unattributedTotal = Number(row.unattributed_upload_bytes || 0) + Number(row.unattributed_download_bytes || 0);
+  switch (field) {
+    case "display_name":
+      return row.display_name || row.client_ip || row.client_mac || "";
+    case "client_ip":
+      return row.client_ip || "";
+    case "remote_ip":
+      return row.remote_ip || "";
+    case "remote_port":
+      return Number(row.remote_port || 0);
+    case "protocol":
+      return row.protocol || "";
+    case "upload_bytes":
+      return Number(row.upload_bytes || 0);
+    case "download_bytes":
+      return Number(row.download_bytes || 0);
+    case "packets":
+      return Number(row.packets || 0);
+    case "client_count":
+      return Number(row.client_count || 0);
+    case "wan_upload_bytes":
+      return Number(row.wan_upload_bytes || 0);
+    case "wan_download_bytes":
+      return Number(row.wan_download_bytes || 0);
+    case "client_upload_bytes":
+      return Number(row.client_upload_bytes || 0);
+    case "client_download_bytes":
+      return Number(row.client_download_bytes || 0);
+    case "unattributed_upload_bytes":
+      return Number(row.unattributed_upload_bytes || 0);
+    case "unattributed_download_bytes":
+      return Number(row.unattributed_download_bytes || 0);
+    case "label":
+      return row.label || "";
+    case "label_source":
+      return row.label_source || "";
+    case "session_count":
+      return Number(row.session_count || 0);
+    case "status":
+      return row.status || "";
+    case "reason":
+      return row.reason || "";
+    case "wan_session_id":
+      return Number(row.wan_session_id || 0);
+    case "lan_session_id":
+      return Number(row.lan_session_id || 0);
+    case "confidence":
+      return Number(row.confidence || 0);
+    case "remote_endpoint":
+      return `${row.remote_ip || ""}:${Number(row.remote_port || 0)}`;
+    case "total_bytes":
+      return totalBytes;
+    case "unattributed_total":
+      return unattributedTotal;
+    default:
+      return table === "uploadClients" || table === "downloadClients" ? totalBytes : "";
+  }
+}
+
+function setSort(table, field) {
+  const current = sortStates[table] || defaultSortStates[table];
+  if (current.field === field) {
+    sortStates[table] = { field, direction: current.direction === "asc" ? "desc" : "asc" };
+  } else {
+    const numericFields = new Set([
+      "upload_bytes", "download_bytes", "packets", "remote_port", "client_count",
+      "wan_upload_bytes", "wan_download_bytes", "client_upload_bytes", "client_download_bytes",
+      "unattributed_upload_bytes", "unattributed_download_bytes", "session_count",
+      "wan_session_id", "lan_session_id", "confidence", "total_bytes", "unattributed_total",
+    ]);
+    sortStates[table] = { field, direction: numericFields.has(field) ? "desc" : "asc" };
+  }
+  savePrefs();
+  renderSortHeaders();
+  loadAnalysis();
+}
+
+function renderSortHeaders() {
+  for (const button of document.querySelectorAll("[data-sort-table][data-sort-field]")) {
+    const table = button.dataset.sortTable;
+    const field = button.dataset.sortField;
+    const state = sortStates[table] || defaultSortStates[table];
+    const active = state.field === field;
+    button.setAttribute("aria-sort", active ? (state.direction === "asc" ? "ascending" : "descending") : "none");
+    button.dataset.direction = active ? state.direction : "";
+  }
 }
 
 function syncControls() {
@@ -440,6 +577,9 @@ elements.preset.addEventListener("change", () => {
 });
 elements.autoRefresh.addEventListener("change", () => { savePrefs(); updateAutoRefresh(); });
 elements.resetButton.addEventListener("click", resetPrefs);
+for (const button of document.querySelectorAll("[data-sort-table][data-sort-field]")) {
+  button.addEventListener("click", () => setSort(button.dataset.sortTable, button.dataset.sortField));
+}
 window.addEventListener("pagehide", cleanupPage);
 window.addEventListener("beforeunload", cleanupPage);
 
@@ -453,7 +593,18 @@ if (savedPrefs.toDate) { elements.toDate.value = savedPrefs.toDate; }
 if (savedPrefs.from) { elements.from.value = normalizeDatetimeLocalPref(savedPrefs.from); }
 if (savedPrefs.to) { elements.to.value = normalizeDatetimeLocalPref(savedPrefs.to); }
 if (savedPrefs.autoRefresh) { elements.autoRefresh.checked = true; }
+if (savedPrefs.sortStates && typeof savedPrefs.sortStates === "object") {
+  sortStates = {
+    ...cloneSortStates(defaultSortStates),
+    ...Object.fromEntries(
+      Object.entries(savedPrefs.sortStates)
+        .filter(([table, state]) => defaultSortStates[table] && state && state.field && state.direction)
+        .map(([table, state]) => [table, { field: state.field, direction: state.direction }]),
+    ),
+  };
+}
 syncControls();
+renderSortHeaders();
 loadAnalysis();
 if (elements.autoRefresh.checked) {
   updateAutoRefresh();
