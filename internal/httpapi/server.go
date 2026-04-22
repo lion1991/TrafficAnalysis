@@ -679,6 +679,11 @@ type analysisSignal struct {
 	Note  string `json:"note"`
 }
 
+const (
+	maxAnalysisObjectRows    = 200
+	maxAnalysisReconcileRows = 200
+)
+
 type objectsResponse struct {
 	Range   responseRange       `json:"range"`
 	Objects []analysisObjectRow `json:"objects"`
@@ -1408,6 +1413,9 @@ func buildObjectsResponse(from, to time.Time, sessions []traffic.FlowSession, dn
 		}
 		return response.Objects[i].Label < response.Objects[j].Label
 	})
+	if len(response.Objects) > maxAnalysisObjectRows {
+		response.Objects = response.Objects[:maxAnalysisObjectRows]
+	}
 	return response
 }
 
@@ -1417,7 +1425,7 @@ func buildReconcileResponse(from, to time.Time, wanSessions []traffic.FlowSessio
 			From: from.UTC().Format(time.RFC3339),
 			To:   to.UTC().Format(time.RFC3339),
 		},
-		Rows: buildReconcileRowsFromSets(wanSessions, lanSessions),
+		Rows: limitReconcileRows(buildReconcileRowsFromSets(wanSessions, lanSessions), maxAnalysisReconcileRows),
 	}
 }
 
@@ -1432,55 +1440,7 @@ func buildReconcileRows(sessions []traffic.FlowSession) []reconcileRow {
 			lanSessions = append(lanSessions, session)
 		}
 	}
-	sort.Slice(wanSessions, func(i, j int) bool {
-		if !wanSessions[i].FirstSeen.Equal(wanSessions[j].FirstSeen) {
-			return wanSessions[i].FirstSeen.Before(wanSessions[j].FirstSeen)
-		}
-		return wanSessions[i].ID < wanSessions[j].ID
-	})
-
-	usedLAN := make(map[int64]struct{})
-	rows := make([]reconcileRow, 0, len(wanSessions))
-	for _, wan := range wanSessions {
-		best, ok := findBestLANMatch(wan, lanSessions, usedLAN)
-		row := reconcileRow{
-			WANSessionID: wan.ID,
-			RemoteIP:     wan.RemoteIP.String(),
-			RemotePort:   wan.RemotePort,
-			Protocol:     wan.Protocol,
-		}
-		if !ok {
-			row.Status = "unmatched"
-			row.Reason = "no_lan_candidate"
-			row.Confidence = 0.2
-			row.UnattributedUploadBytes = wan.UploadBytes
-			row.UnattributedDownloadBytes = wan.DownloadBytes
-			rows = append(rows, row)
-			continue
-		}
-
-		usedLAN[best.ID] = struct{}{}
-		row.LANSessionID = best.ID
-		row.UnattributedUploadBytes = positiveDelta(wan.UploadBytes, best.UploadBytes)
-		row.UnattributedDownloadBytes = positiveDelta(wan.DownloadBytes, best.DownloadBytes)
-		row.Confidence = matchConfidence(wan, best)
-
-		totalGap := row.UnattributedUploadBytes + row.UnattributedDownloadBytes
-		wanTotal := wan.UploadBytes + wan.DownloadBytes
-		threshold := wanTotal / 5
-		if threshold < 1024 {
-			threshold = 1024
-		}
-		if totalGap <= threshold {
-			row.Status = "matched"
-			row.Reason = "remote_time_overlap"
-		} else {
-			row.Status = "partial"
-			row.Reason = "byte_gap"
-		}
-		rows = append(rows, row)
-	}
-	return rows
+	return buildReconcileRowsFromSets(wanSessions, lanSessions)
 }
 
 func buildReconcileRowsFromSets(wanSessions []traffic.FlowSession, lanSessions []traffic.FlowSession) []reconcileRow {
@@ -1491,10 +1451,11 @@ func buildReconcileRowsFromSets(wanSessions []traffic.FlowSession, lanSessions [
 		return wanSessions[i].ID < wanSessions[j].ID
 	})
 
+	lanIndex := buildLANSessionIndex(lanSessions)
 	usedLAN := make(map[int64]struct{})
 	rows := make([]reconcileRow, 0, len(wanSessions))
 	for _, wan := range wanSessions {
-		best, ok := findBestLANMatch(wan, lanSessions, usedLAN)
+		best, ok := findBestLANMatch(wan, lanIndex[reconcileMatchKey(wan)], usedLAN)
 		row := reconcileRow{
 			WANSessionID: wan.ID,
 			RemoteIP:     wan.RemoteIP.String(),
@@ -1532,7 +1493,25 @@ func buildReconcileRowsFromSets(wanSessions []traffic.FlowSession, lanSessions [
 		}
 		rows = append(rows, row)
 	}
+	sort.Slice(rows, func(i, j int) bool {
+		leftGap := rows[i].UnattributedUploadBytes + rows[i].UnattributedDownloadBytes
+		rightGap := rows[j].UnattributedUploadBytes + rows[j].UnattributedDownloadBytes
+		if leftGap != rightGap {
+			return leftGap > rightGap
+		}
+		if rows[i].Confidence != rows[j].Confidence {
+			return rows[i].Confidence < rows[j].Confidence
+		}
+		return rows[i].WANSessionID > rows[j].WANSessionID
+	})
 	return rows
+}
+
+func limitReconcileRows(rows []reconcileRow, limit int) []reconcileRow {
+	if limit <= 0 || len(rows) <= limit {
+		return rows
+	}
+	return rows[:limit]
 }
 
 func buildSessionResponse(session traffic.FlowSession, label, source string, confidence float64, dnsRows []traffic.DNSObservation, tlsRows []traffic.TLSObservation, reconcileRows []reconcileRow) sessionResponse {
@@ -1676,6 +1655,18 @@ func filterTLSObservationsForSession(session traffic.FlowSession, observations [
 		filtered = append(filtered, observation)
 	}
 	return filtered
+}
+
+func reconcileMatchKey(session traffic.FlowSession) string {
+	return session.Protocol + "\x00" + session.RemoteIP.String() + "\x00" + strconv.Itoa(int(session.RemotePort))
+}
+
+func buildLANSessionIndex(lanSessions []traffic.FlowSession) map[string][]traffic.FlowSession {
+	index := make(map[string][]traffic.FlowSession)
+	for _, session := range lanSessions {
+		index[reconcileMatchKey(session)] = append(index[reconcileMatchKey(session)], session)
+	}
+	return index
 }
 
 func findBestLANMatch(wan traffic.FlowSession, lanSessions []traffic.FlowSession, usedLAN map[int64]struct{}) (traffic.FlowSession, bool) {

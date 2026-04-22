@@ -28,7 +28,10 @@ const elements = {
 };
 
 let refreshTimer = null;
+let activeRequestController = null;
 const ANALYSIS_PREFS_KEY = "ta_analysis_prefs";
+const MAX_OBJECT_ROWS = 200;
+const MAX_RECONCILE_ROWS = 200;
 const defaultSortStates = {
   uploadClients: { field: "upload_bytes", direction: "desc" },
   downloadClients: { field: "download_bytes", direction: "desc" },
@@ -177,35 +180,62 @@ function buildReconcileURL() {
   return `/api/analysis/reconcile?${buildRangeParams().toString()}`;
 }
 
-async function fetchJSON(url) {
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+async function fetchJSON(url, signal) {
+  const response = await fetch(url, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
   if (!response.ok) {
     throw new Error(await response.text());
   }
   return response.json();
 }
 
+function abortActiveRequest() {
+  if (!activeRequestController) {
+    return;
+  }
+  activeRequestController.abort();
+  activeRequestController = null;
+}
+
 async function loadAnalysis() {
+  abortActiveRequest();
+  const requestController = new AbortController();
+  activeRequestController = requestController;
   elements.status.textContent = "分析中";
   elements.status.style.background = "var(--accent)";
 
   try {
-    const analysis = await fetchJSON(buildAnalysisURL());
+    const analysis = await fetchJSON(buildAnalysisURL(), requestController.signal);
+    if (activeRequestController !== requestController) {
+      return;
+    }
     renderAnalysis(analysis);
-    elements.status.textContent = "基础结果已更新";
+    elements.status.textContent = "基础结果已更新，正在补充访问对象和 WAN/LAN 对账";
     elements.status.style.background = "#dfe9b1";
     const [objectsResult, reconcileResult] = await Promise.allSettled([
-      fetchJSON(buildObjectsURL()),
-      fetchJSON(buildReconcileURL()),
+      fetchJSON(buildObjectsURL(), requestController.signal),
+      fetchJSON(buildReconcileURL(), requestController.signal),
     ]);
+    if (activeRequestController !== requestController) {
+      return;
+    }
     renderObjects(objectsResult.status === "fulfilled" ? (objectsResult.value.objects || []) : []);
     renderReconcile(reconcileResult.status === "fulfilled" ? (reconcileResult.value.rows || []) : []);
     elements.status.textContent = "已更新";
     elements.status.style.background = "#b9dfcc";
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return;
+    }
     elements.status.textContent = "分析失败";
     elements.status.style.background = "#f1b1aa";
     console.error(error);
+  } finally {
+    if (activeRequestController === requestController) {
+      activeRequestController = null;
+    }
   }
 }
 
@@ -360,8 +390,18 @@ function renderLimitations(limitations) {
   elements.limitationsBody.innerHTML = limitations.map((item) => `<li>${escapeHTML(item)}</li>`).join("");
 }
 
+function limitRows(rows, limit) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  if (!Number.isFinite(limit) || limit <= 0 || rows.length <= limit) {
+    return Array.from(rows);
+  }
+  return rows.slice(0, limit);
+}
+
 function renderObjects(rows) {
-  rows = sortRows("objects", rows);
+  rows = limitRows(sortRows("objects", rows), MAX_OBJECT_ROWS);
   if (rows.length === 0) {
     elements.objectsBody.innerHTML = `<tr><td colspan="8">暂无访问对象数据</td></tr>`;
     return;
@@ -383,7 +423,7 @@ function renderObjects(rows) {
 }
 
 function renderReconcile(rows) {
-  rows = sortRows("reconcile", rows);
+  rows = limitRows(sortRows("reconcile", rows), MAX_RECONCILE_ROWS);
   if (rows.length === 0) {
     elements.reconcileBody.innerHTML = `<tr><td colspan="9">暂无对账数据</td></tr>`;
     return;
@@ -569,6 +609,7 @@ function updateAutoRefresh() {
 
 function cleanupPage() {
   stopPolling();
+  abortActiveRequest();
 }
 
 elements.queryButton.addEventListener("click", () => { savePrefs(); loadAnalysis(); });

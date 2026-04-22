@@ -810,11 +810,91 @@ func TestAnalysisReconcileAPIReturnsMatchedAndUnmatchedSessions(t *testing.T) {
 	if len(body.Rows) != 2 {
 		t.Fatalf("expected two reconcile rows, got %#v", body.Rows)
 	}
-	if body.Rows[0].WANSessionID != 1 || body.Rows[0].LANSessionID != 2 || body.Rows[0].Status != "matched" {
-		t.Fatalf("unexpected matched row: %#v", body.Rows[0])
+	rowsByWAN := make(map[int64]struct {
+		WANSessionID              int64   `json:"wan_session_id"`
+		LANSessionID              int64   `json:"lan_session_id"`
+		Status                    string  `json:"status"`
+		Reason                    string  `json:"reason"`
+		Confidence                float64 `json:"confidence"`
+		UnattributedUploadBytes   int64   `json:"unattributed_upload_bytes"`
+		UnattributedDownloadBytes int64   `json:"unattributed_download_bytes"`
+	}, len(body.Rows))
+	for _, row := range body.Rows {
+		rowsByWAN[row.WANSessionID] = row
 	}
-	if body.Rows[1].WANSessionID != 3 || body.Rows[1].Status != "unmatched" || body.Rows[1].Reason == "" {
-		t.Fatalf("unexpected unmatched row: %#v", body.Rows[1])
+	if matched := rowsByWAN[1]; matched.LANSessionID != 2 || matched.Status != "matched" {
+		t.Fatalf("unexpected matched row: %#v", matched)
+	}
+	if unmatched := rowsByWAN[3]; unmatched.Status != "unmatched" || unmatched.Reason == "" {
+		t.Fatalf("unexpected unmatched row: %#v", unmatched)
+	}
+}
+
+func TestBuildObjectsResponseLimitsRowsToTopTotals(t *testing.T) {
+	const limit = 200
+	start := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+	sessions := make([]traffic.FlowSession, 0, limit+5)
+	for i := 0; i < limit+5; i++ {
+		sessions = append(sessions, traffic.FlowSession{
+			ID:            int64(i + 1),
+			Viewpoint:     traffic.ViewpointLAN,
+			Protocol:      "tcp",
+			LocalIP:       trafficMustAddr("192.168.248.22"),
+			LocalPort:     uint16(40000 + i),
+			RemoteIP:      trafficMustAddr("203.0.113.9"),
+			RemotePort:    uint16(10000 + i),
+			ClientIP:      trafficMustAddr("192.168.248.22"),
+			ClientMAC:     "00:11:22:33:44:55",
+			FirstSeen:     start.Add(time.Duration(i) * time.Second),
+			LastSeen:      start.Add(time.Duration(i)*time.Second + 5*time.Second),
+			UploadBytes:   int64(i + 1),
+			DownloadBytes: 0,
+			Packets:       1,
+		})
+	}
+
+	response := buildObjectsResponse(start, start.Add(time.Hour), sessions, nil, nil)
+	if len(response.Objects) != limit {
+		t.Fatalf("expected %d object rows after limiting, got %d", limit, len(response.Objects))
+	}
+	if response.Objects[0].UploadBytes != limit+5 {
+		t.Fatalf("expected largest object total first, got %#v", response.Objects[0])
+	}
+	if response.Objects[len(response.Objects)-1].UploadBytes != 6 {
+		t.Fatalf("expected smallest retained object total to be 6, got %#v", response.Objects[len(response.Objects)-1])
+	}
+}
+
+func TestBuildReconcileResponseLimitsRowsToLargestUnattributedTotals(t *testing.T) {
+	const limit = 200
+	start := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+	wanSessions := make([]traffic.FlowSession, 0, limit+5)
+	for i := 0; i < limit+5; i++ {
+		wanSessions = append(wanSessions, traffic.FlowSession{
+			ID:            int64(i + 1),
+			Viewpoint:     traffic.ViewpointWAN,
+			Protocol:      "udp",
+			LocalIP:       trafficMustAddr("198.51.100.10"),
+			LocalPort:     uint16(50000 + i),
+			RemoteIP:      trafficMustAddr("198.51.100.8"),
+			RemotePort:    uint16(20000 + i),
+			FirstSeen:     start.Add(time.Duration(i) * time.Second),
+			LastSeen:      start.Add(time.Duration(i)*time.Second + 5*time.Second),
+			UploadBytes:   int64(i + 1),
+			DownloadBytes: 0,
+			Packets:       1,
+		})
+	}
+
+	response := buildReconcileResponse(start, start.Add(time.Hour), wanSessions, nil)
+	if len(response.Rows) != limit {
+		t.Fatalf("expected %d reconcile rows after limiting, got %d", limit, len(response.Rows))
+	}
+	if response.Rows[0].WANSessionID != limit+5 {
+		t.Fatalf("expected largest unattributed row first, got %#v", response.Rows[0])
+	}
+	if response.Rows[len(response.Rows)-1].WANSessionID != 6 {
+		t.Fatalf("expected smallest retained reconcile row to be WAN session 6, got %#v", response.Rows[len(response.Rows)-1])
 	}
 }
 
@@ -1123,13 +1203,49 @@ func TestAnalysisPageRendersBaseResultsBeforeAuxiliaryTables(t *testing.T) {
 		t.Fatalf("read analysis.js: %v", err)
 	}
 	for _, want := range []string{
-		"const analysis = await fetchJSON(buildAnalysisURL());",
+		"const analysis = await fetchJSON(buildAnalysisURL(), requestController.signal);",
 		"renderAnalysis(analysis);",
 		"const [objectsResult, reconcileResult] = await Promise.allSettled([",
-		`elements.status.textContent = "基础结果已更新";`,
+		`elements.status.textContent = "基础结果已更新，正在补充访问对象和 WAN/LAN 对账";`,
 	} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("expected analysis page to render base results before slower auxiliary fetches with %q", want)
+		}
+	}
+}
+
+func TestAnalysisPageLimitsHeavyAuxiliaryTables(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		"const MAX_OBJECT_ROWS = 200;",
+		"const MAX_RECONCILE_ROWS = 200;",
+		"rows = limitRows(sortRows(\"objects\", rows), MAX_OBJECT_ROWS);",
+		"rows = limitRows(sortRows(\"reconcile\", rows), MAX_RECONCILE_ROWS);",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page to clamp heavy auxiliary tables with %q", want)
+		}
+	}
+}
+
+func TestAnalysisPageAbortsInFlightFetchesWhenNavigatingAway(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		"let activeRequestController = null;",
+		"function abortActiveRequest()",
+		"activeRequestController.abort();",
+		"new AbortController()",
+		"if (error?.name === \"AbortError\")",
+		"function cleanupPage()",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page to abort in-flight fetches during navigation with %q", want)
 		}
 	}
 }
