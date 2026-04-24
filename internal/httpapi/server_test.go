@@ -1537,6 +1537,19 @@ func TestAnalysisPageKeepsAuxiliaryTablesVisibleWhileRefreshing(t *testing.T) {
 	}
 }
 
+func TestAnalysisPageAutoRefreshSkipsTickWhenPreviousStillInFlight(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	if !strings.Contains(string(js), "if (activeRequestController) {\n      return;\n    }\n    loadAnalysis();") {
+		t.Fatalf("expected auto-refresh tick to skip when a previous load is still running")
+	}
+	if strings.Contains(string(js), "setInterval(loadAnalysis,") {
+		t.Fatalf("expected auto-refresh setInterval to wrap loadAnalysis with an in-flight guard")
+	}
+}
+
 func TestAnalysisPageAbortsInFlightFetchesWhenNavigatingAway(t *testing.T) {
 	js, err := embeddedStatic.ReadFile("static/analysis.js")
 	if err != nil {

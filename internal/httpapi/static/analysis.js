@@ -610,7 +610,12 @@ function startPolling(intervalMs) {
   if (refreshTimer) {
     clearInterval(refreshTimer);
   }
-  refreshTimer = setInterval(loadAnalysis, intervalMs);
+  refreshTimer = setInterval(() => {
+    if (activeRequestController) {
+      return;
+    }
+    loadAnalysis();
+  }, intervalMs);
 }
 
 function updateAutoRefresh() {
