@@ -492,7 +492,7 @@ func (s server) handleAnalysisReconcile(w http.ResponseWriter, r *http.Request) 
 	}
 	s.writeCachedAnalysisJSON(w, analysisCacheKey("reconcile", from, to), func() (any, error) {
 		if reconcileQueryer, ok := s.flowSessionQueryer.(FlowSessionReconcileQueryer); ok {
-			wanSessions, err := reconcileQueryer.QueryTopFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN, maxAnalysisReconcileRows*20)
+			wanSessions, err := reconcileQueryer.QueryTopFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointWAN, maxAnalysisReconcileWANFetch)
 			if err != nil {
 				return nil, err
 			}
@@ -778,6 +778,7 @@ const (
 	maxAnalysisObjectRows         = 200
 	maxAnalysisReconcileRows      = 200
 	maxAnalysisObjectSessionFetch = maxAnalysisObjectRows * 50
+	maxAnalysisReconcileWANFetch  = maxAnalysisReconcileRows * 5
 	maxAnalysisReconcileLANFetch  = maxAnalysisReconcileRows * 20
 )
 
