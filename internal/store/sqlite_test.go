@@ -634,6 +634,66 @@ WHERE client_ip = ? AND client_mac = ? AND direction = ? AND protocol = ?;
 	}
 }
 
+func TestSQLiteStorePrunesEvidenceTablesOlderThanRetention(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-30 * 24 * time.Hour)
+	recent := now.Add(-2 * 24 * time.Hour)
+
+	clientIP := netip.MustParseAddr("192.168.248.22")
+	remoteIP := netip.MustParseAddr("203.0.113.9")
+
+	for _, observedAt := range []time.Time{old, recent} {
+		if err := store.UpsertDNSObservations(ctx, []traffic.DNSObservation{{
+			ObservedAt: observedAt, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55",
+			Name: "api.example.com", RecordType: "A", AnswerIP: remoteIP, TTL: 300, Source: "dns",
+		}}); err != nil {
+			t.Fatalf("upsert dns: %v", err)
+		}
+		if err := store.UpsertTLSObservations(ctx, []traffic.TLSObservation{{
+			ObservedAt: observedAt, Viewpoint: traffic.ViewpointLAN, ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55",
+			RemoteIP: remoteIP, RemotePort: 443, ServerName: "api.example.com", ALPN: "h2", Protocol: "tcp", Source: "tls_client_hello",
+		}}); err != nil {
+			t.Fatalf("upsert tls: %v", err)
+		}
+		if _, err := store.InsertFlowSession(ctx, traffic.FlowSession{
+			Viewpoint: traffic.ViewpointLAN, Protocol: "tcp",
+			LocalIP: clientIP, LocalPort: 53000, RemoteIP: remoteIP, RemotePort: 443,
+			ClientIP: clientIP, ClientMAC: "00:11:22:33:44:55",
+			FirstSeen: observedAt, LastSeen: observedAt.Add(30 * time.Second),
+			UploadBytes: 1024, DownloadBytes: 512, Packets: 4,
+		}); err != nil {
+			t.Fatalf("insert flow session: %v", err)
+		}
+	}
+
+	if err := store.CompactAndPrune(ctx, now, RetentionPolicy{EvidenceRetention: 14 * 24 * time.Hour}); err != nil {
+		t.Fatalf("compact and prune: %v", err)
+	}
+
+	counts := map[string]int{}
+	for _, table := range []string{"flow_sessions", "dns_observations", "tls_observations"} {
+		var n int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+`;`).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		counts[table] = n
+	}
+	for table, n := range counts {
+		if n != 1 {
+			t.Fatalf("expected %s to retain exactly the recent row, got %d", table, n)
+		}
+	}
+}
+
 func TestSQLiteStoreStoresAndQueriesAnalysisObservationsAndSessions(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "traffic.db")

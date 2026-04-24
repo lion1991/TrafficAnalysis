@@ -329,8 +329,9 @@ func runCaptureToStore(ctx context.Context, cfg config.Config, output resolvedCa
 	retentionTicker := time.NewTicker(cfg.Retention.CompactInterval())
 	defer retentionTicker.Stop()
 	retentionPolicy := store.RetentionPolicy{
-		MinuteRetention: cfg.Retention.MinuteDuration(),
-		HourlyRetention: cfg.Retention.HourlyDuration(),
+		MinuteRetention:   cfg.Retention.MinuteDuration(),
+		HourlyRetention:   cfg.Retention.HourlyDuration(),
+		EvidenceRetention: cfg.Retention.EvidenceDuration(),
 	}
 
 	var liveTicker *time.Ticker

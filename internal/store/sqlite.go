@@ -105,8 +105,9 @@ type FlowSessionMatchKey struct {
 }
 
 type RetentionPolicy struct {
-	MinuteRetention time.Duration
-	HourlyRetention time.Duration
+	MinuteRetention   time.Duration
+	HourlyRetention   time.Duration
+	EvidenceRetention time.Duration
 }
 
 type SQLiteStore struct {
@@ -1742,7 +1743,7 @@ WHERE id = ?;
 }
 
 func (s *SQLiteStore) CompactAndPrune(ctx context.Context, now time.Time, policy RetentionPolicy) error {
-	if policy.MinuteRetention <= 0 && policy.HourlyRetention <= 0 {
+	if policy.MinuteRetention <= 0 && policy.HourlyRetention <= 0 && policy.EvidenceRetention <= 0 {
 		return nil
 	}
 
@@ -1764,8 +1765,28 @@ func (s *SQLiteStore) CompactAndPrune(ctx context.Context, now time.Time, policy
 			return err
 		}
 	}
+	if policy.EvidenceRetention > 0 {
+		evidenceCutoff := now.UTC().Add(-policy.EvidenceRetention).Truncate(time.Hour).Unix()
+		if err := pruneEvidenceTables(ctx, tx, evidenceCutoff); err != nil {
+			return err
+		}
+	}
 
 	return tx.Commit()
+}
+
+func pruneEvidenceTables(ctx context.Context, tx *sql.Tx, cutoffUnix int64) error {
+	statements := []string{
+		`DELETE FROM flow_sessions WHERE last_seen < ?;`,
+		`DELETE FROM dns_observations WHERE observed_at < ?;`,
+		`DELETE FROM tls_observations WHERE observed_at < ?;`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement, cutoffUnix); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func compactMinuteBuckets(ctx context.Context, tx *sql.Tx, cutoffUnix int64) error {

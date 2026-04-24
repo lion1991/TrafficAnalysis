@@ -15,6 +15,7 @@
   "retention": {
     "minute_days": 30,
     "hourly_days": 365,
+    "evidence_days": 14,
     "compact_seconds": 3600
   },
   "wan_ip": {

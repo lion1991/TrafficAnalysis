@@ -35,6 +35,7 @@ type WANIPConfig struct {
 type Retention struct {
 	MinuteDays     int `json:"minute_days"`
 	HourlyDays     int `json:"hourly_days"`
+	EvidenceDays   int `json:"evidence_days"`
 	CompactSeconds int `json:"compact_seconds"`
 }
 
@@ -64,6 +65,7 @@ func Default() Config {
 		Retention: Retention{
 			MinuteDays:     30,
 			HourlyDays:     365,
+			EvidenceDays:   14,
 			CompactSeconds: 3600,
 		},
 		Telegram: Telegram{
@@ -116,6 +118,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Retention.HourlyDays <= 0 {
 		c.Retention.HourlyDays = defaults.Retention.HourlyDays
+	}
+	if c.Retention.EvidenceDays <= 0 {
+		c.Retention.EvidenceDays = defaults.Retention.EvidenceDays
 	}
 	if c.Retention.CompactSeconds <= 0 {
 		c.Retention.CompactSeconds = defaults.Retention.CompactSeconds
@@ -181,6 +186,10 @@ func (r Retention) MinuteDuration() time.Duration {
 
 func (r Retention) HourlyDuration() time.Duration {
 	return time.Duration(r.HourlyDays) * 24 * time.Hour
+}
+
+func (r Retention) EvidenceDuration() time.Duration {
+	return time.Duration(r.EvidenceDays) * 24 * time.Hour
 }
 
 func (r Retention) CompactInterval() time.Duration {

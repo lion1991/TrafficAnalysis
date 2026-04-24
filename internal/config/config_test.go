@@ -30,11 +30,17 @@ func TestDefaultRetentionPolicyCompactsAndArchivesLongRunningData(t *testing.T) 
 	if cfg.Retention.HourlyDays != 365 {
 		t.Fatalf("expected 365 day hourly retention, got %d", cfg.Retention.HourlyDays)
 	}
+	if cfg.Retention.EvidenceDays != 14 {
+		t.Fatalf("expected 14 day evidence retention, got %d", cfg.Retention.EvidenceDays)
+	}
 	if cfg.Retention.CompactSeconds != 3600 {
 		t.Fatalf("expected hourly compaction, got %d", cfg.Retention.CompactSeconds)
 	}
 	if cfg.Retention.MinuteDuration() != 30*24*time.Hour {
 		t.Fatalf("unexpected minute retention duration: %s", cfg.Retention.MinuteDuration())
+	}
+	if cfg.Retention.EvidenceDuration() != 14*24*time.Hour {
+		t.Fatalf("unexpected evidence retention duration: %s", cfg.Retention.EvidenceDuration())
 	}
 }
 
@@ -48,7 +54,7 @@ func TestLoadAppliesRetentionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Retention.MinuteDays != 30 || cfg.Retention.HourlyDays != 365 || cfg.Retention.CompactSeconds != 3600 {
+	if cfg.Retention.MinuteDays != 30 || cfg.Retention.HourlyDays != 365 || cfg.Retention.EvidenceDays != 14 || cfg.Retention.CompactSeconds != 3600 {
 		t.Fatalf("expected retention defaults, got %#v", cfg.Retention)
 	}
 }
