@@ -897,7 +897,7 @@ func TestSQLiteStoreCanQueryReconcileFlowSessionCandidates(t *testing.T) {
 
 	lanMatches, err := store.QueryFlowSessionsByViewpointAndRemoteKeys(ctx, start.Add(-time.Minute), start.Add(time.Minute), traffic.ViewpointLAN, []FlowSessionMatchKey{
 		{RemoteIP: netip.MustParseAddr("198.51.100.8"), RemotePort: 3478, Protocol: "udp"},
-	})
+	}, 0)
 	if err != nil {
 		t.Fatalf("query lan match sessions: %v", err)
 	}

@@ -862,6 +862,7 @@ type fakeFlowReconcileQueryer struct {
 	topLimit       int
 	topQueries     int
 	remoteKeyCalls int
+	remoteKeyLimit int
 	topLANSessions []traffic.FlowSession
 	topWANSessions []traffic.FlowSession
 	lanMatches     []traffic.FlowSession
@@ -878,8 +879,9 @@ func (f *fakeFlowReconcileQueryer) QueryTopFlowSessionsByViewpoint(ctx context.C
 	return f.topWANSessions, nil
 }
 
-func (f *fakeFlowReconcileQueryer) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey) ([]traffic.FlowSession, error) {
+func (f *fakeFlowReconcileQueryer) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey, limit int) ([]traffic.FlowSession, error) {
 	f.remoteKeyCalls++
+	f.remoteKeyLimit = limit
 	return f.lanMatches, nil
 }
 
@@ -923,6 +925,42 @@ func TestAnalysisObjectsAPIUsesBoundedTopSessionsFastPath(t *testing.T) {
 	}
 	if queryer.flowQueries != 0 {
 		t.Fatalf("expected handler to skip the unbounded flow-session scan, got %d calls", queryer.flowQueries)
+	}
+}
+
+func TestAnalysisReconcileAPICapsLANFetchByBytes(t *testing.T) {
+	wan := traffic.FlowSession{
+		ID:            10,
+		Viewpoint:     traffic.ViewpointWAN,
+		Protocol:      "tcp",
+		LocalIP:       trafficMustAddr("198.51.100.10"),
+		LocalPort:     53000,
+		RemoteIP:      trafficMustAddr("203.0.113.9"),
+		RemotePort:    443,
+		FirstSeen:     time.Date(2026, 4, 17, 10, 0, 1, 0, time.UTC),
+		LastSeen:      time.Date(2026, 4, 17, 10, 0, 20, 0, time.UTC),
+		UploadBytes:   4096,
+		DownloadBytes: 2048,
+		Packets:       12,
+	}
+	queryer := &fakeFlowReconcileQueryer{
+		fakeBucketQueryer: &fakeBucketQueryer{flowSessions: []traffic.FlowSession{wan}},
+		topWANSessions:    []traffic.FlowSession{wan},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis/reconcile?last=24h", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.remoteKeyCalls != 1 {
+		t.Fatalf("expected reconcile handler to query LAN by remote keys once, got %d", queryer.remoteKeyCalls)
+	}
+	if queryer.remoteKeyLimit != maxAnalysisReconcileLANFetch {
+		t.Fatalf("expected LAN fetch limit %d, got %d", maxAnalysisReconcileLANFetch, queryer.remoteKeyLimit)
 	}
 }
 

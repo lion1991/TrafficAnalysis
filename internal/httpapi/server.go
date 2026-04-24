@@ -73,7 +73,7 @@ type ViewpointFlowSessionQueryer interface {
 
 type FlowSessionReconcileQueryer interface {
 	QueryTopFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, limit int) ([]traffic.FlowSession, error)
-	QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey) ([]traffic.FlowSession, error)
+	QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey, limit int) ([]traffic.FlowSession, error)
 }
 
 type Options struct {
@@ -497,7 +497,7 @@ func (s server) handleAnalysisReconcile(w http.ResponseWriter, r *http.Request) 
 				return nil, err
 			}
 			keys := reconcileMatchKeysFromSessions(wanSessions)
-			lanSessions, err := reconcileQueryer.QueryFlowSessionsByViewpointAndRemoteKeys(r.Context(), from, to, traffic.ViewpointLAN, keys)
+			lanSessions, err := reconcileQueryer.QueryFlowSessionsByViewpointAndRemoteKeys(r.Context(), from, to, traffic.ViewpointLAN, keys, maxAnalysisReconcileLANFetch)
 			if err != nil {
 				return nil, err
 			}
@@ -778,6 +778,7 @@ const (
 	maxAnalysisObjectRows         = 200
 	maxAnalysisReconcileRows      = 200
 	maxAnalysisObjectSessionFetch = maxAnalysisObjectRows * 50
+	maxAnalysisReconcileLANFetch  = maxAnalysisReconcileRows * 20
 )
 
 type objectsResponse struct {

@@ -1637,7 +1637,7 @@ LIMIT ?;
 	return result, nil
 }
 
-func (s *SQLiteStore) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []FlowSessionMatchKey) ([]traffic.FlowSession, error) {
+func (s *SQLiteStore) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []FlowSessionMatchKey, limit int) ([]traffic.FlowSession, error) {
 	if len(keys) == 0 {
 		return []traffic.FlowSession{}, nil
 	}
@@ -1646,7 +1646,7 @@ func (s *SQLiteStore) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Cont
 	queryBuilder.WriteString(`
 WITH target_keys(remote_ip, remote_port, protocol) AS (
 VALUES `)
-	args := make([]any, 0, len(keys)*3+3)
+	args := make([]any, 0, len(keys)*3+4)
 	for index, key := range keys {
 		if index > 0 {
 			queryBuilder.WriteString(", ")
@@ -1665,9 +1665,15 @@ JOIN target_keys tk
  AND tk.remote_port = fs.remote_port
  AND tk.protocol = fs.protocol
 WHERE fs.last_seen >= ? AND fs.first_seen < ? AND fs.viewpoint = ?
-ORDER BY fs.first_seen ASC, fs.id ASC;
-`)
+ORDER BY (fs.upload_bytes + fs.download_bytes) DESC, fs.first_seen DESC, fs.id DESC`)
 	args = append(args, from.UTC().Unix(), to.UTC().Unix(), string(viewpoint))
+	if limit > 0 {
+		queryBuilder.WriteString(`
+LIMIT ?`)
+		args = append(args, limit)
+	}
+	queryBuilder.WriteString(`;
+`)
 
 	rows, err := s.db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
