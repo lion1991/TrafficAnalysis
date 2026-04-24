@@ -413,6 +413,31 @@ function limitRows(rows, limit) {
   return rows.slice(0, limit);
 }
 
+const LABEL_SOURCE_LABELS = {
+  tls_sni: "TLS SNI",
+  dns_answer: "DNS 应答",
+  remote_endpoint: "远端端点",
+};
+
+const RECONCILE_STATUS_LABELS = {
+  matched: "已匹配",
+  partial: "部分匹配",
+  unmatched: "未匹配",
+};
+
+const RECONCILE_REASON_LABELS = {
+  remote_time_overlap: "远端时段重叠",
+  byte_gap: "字节缺口",
+  no_lan_candidate: "无 LAN 匹配",
+};
+
+function localizeEnum(map, value) {
+  if (!value) {
+    return "-";
+  }
+  return map[value] || value;
+}
+
 function renderObjects(rows) {
   rows = limitRows(sortRows("objects", rows), MAX_OBJECT_ROWS);
   if (rows.length === 0) {
@@ -423,7 +448,7 @@ function renderObjects(rows) {
     .map((row) => `
       <tr>
         <td>${escapeHTML(row.label || "-")}</td>
-        <td>${escapeHTML(row.label_source || "-")}</td>
+        <td>${escapeHTML(localizeEnum(LABEL_SOURCE_LABELS, row.label_source))}</td>
         <td>${escapeHTML(row.protocol || "-")}</td>
         <td>${escapeHTML(row.remote_ip || "-")}${row.remote_port ? `:${Number(row.remote_port).toLocaleString()}` : ""}</td>
         <td>${formatBytes(row.upload_bytes)}</td>
@@ -444,8 +469,8 @@ function renderReconcile(rows) {
   elements.reconcileBody.innerHTML = rows
     .map((row) => `
       <tr>
-        <td>${escapeHTML(row.status || "-")}</td>
-        <td>${escapeHTML(row.reason || "-")}</td>
+        <td>${escapeHTML(localizeEnum(RECONCILE_STATUS_LABELS, row.status))}</td>
+        <td>${escapeHTML(localizeEnum(RECONCILE_REASON_LABELS, row.reason))}</td>
         <td>${row.wan_session_id ? Number(row.wan_session_id).toLocaleString() : "-"}</td>
         <td>${row.lan_session_id ? Number(row.lan_session_id).toLocaleString() : "-"}</td>
         <td>${escapeHTML(row.remote_ip || "-")}${row.remote_port ? `:${Number(row.remote_port).toLocaleString()}` : ""}</td>
@@ -529,13 +554,13 @@ function sortValue(table, row, field) {
     case "label":
       return row.label || "";
     case "label_source":
-      return row.label_source || "";
+      return localizeEnum(LABEL_SOURCE_LABELS, row.label_source);
     case "session_count":
       return Number(row.session_count || 0);
     case "status":
-      return row.status || "";
+      return localizeEnum(RECONCILE_STATUS_LABELS, row.status);
     case "reason":
-      return row.reason || "";
+      return localizeEnum(RECONCILE_REASON_LABELS, row.reason);
     case "wan_session_id":
       return Number(row.wan_session_id || 0);
     case "lan_session_id":

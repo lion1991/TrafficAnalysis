@@ -1537,6 +1537,31 @@ func TestAnalysisPageKeepsAuxiliaryTablesVisibleWhileRefreshing(t *testing.T) {
 	}
 }
 
+func TestAnalysisPageLocalizesEnumColumns(t *testing.T) {
+	js, err := embeddedStatic.ReadFile("static/analysis.js")
+	if err != nil {
+		t.Fatalf("read analysis.js: %v", err)
+	}
+	for _, want := range []string{
+		`matched: "已匹配"`,
+		`partial: "部分匹配"`,
+		`unmatched: "未匹配"`,
+		`remote_time_overlap: "远端时段重叠"`,
+		`byte_gap: "字节缺口"`,
+		`no_lan_candidate: "无 LAN 匹配"`,
+		`tls_sni: "TLS SNI"`,
+		`dns_answer: "DNS 应答"`,
+		`remote_endpoint: "远端端点"`,
+		`localizeEnum(LABEL_SOURCE_LABELS, row.label_source)`,
+		`localizeEnum(RECONCILE_STATUS_LABELS, row.status)`,
+		`localizeEnum(RECONCILE_REASON_LABELS, row.reason)`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("expected analysis page to localize enum column with %q", want)
+		}
+	}
+}
+
 func TestAnalysisPageAutoRefreshSkipsTickWhenPreviousStillInFlight(t *testing.T) {
 	js, err := embeddedStatic.ReadFile("static/analysis.js")
 	if err != nil {
