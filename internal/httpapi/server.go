@@ -457,19 +457,45 @@ func (s server) handleAnalysisObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeCachedAnalysisJSON(w, analysisCacheKey("objects", from, to), func() (any, error) {
-		sessions, err := s.queryTopFlowSessionsForObjects(r.Context(), from, to, traffic.ViewpointLAN)
-		if err != nil {
-			return nil, err
-		}
-		dnsRows, err := s.queryDNSObservations(r.Context(), from, to)
-		if err != nil {
-			return nil, err
-		}
-		tlsRows, err := s.queryTLSObservationsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
-		if err != nil {
-			return nil, err
-		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
 
+		var (
+			sessions    []traffic.FlowSession
+			dnsRows     []traffic.DNSObservation
+			tlsRows     []traffic.TLSObservation
+			sessionsErr error
+			dnsErr      error
+			tlsErr      error
+			wg          sync.WaitGroup
+		)
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			sessions, sessionsErr = s.queryTopFlowSessionsForObjects(ctx, from, to, traffic.ViewpointLAN)
+			if sessionsErr != nil {
+				cancel()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			dnsRows, dnsErr = s.queryDNSObservations(ctx, from, to)
+			if dnsErr != nil {
+				cancel()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			tlsRows, tlsErr = s.queryTLSObservationsByViewpoint(ctx, from, to, traffic.ViewpointLAN)
+			if tlsErr != nil {
+				cancel()
+			}
+		}()
+		wg.Wait()
+
+		if err := firstNonNil(sessionsErr, dnsErr, tlsErr); err != nil {
+			return nil, err
+		}
 		return buildObjectsResponse(from, to, sessions, dnsRows, tlsRows), nil
 	})
 }
@@ -612,6 +638,20 @@ func (s server) queryTLSObservationsByViewpoint(ctx context.Context, from, to ti
 		}
 	}
 	return filtered, nil
+}
+
+func firstNonNil(errs ...error) error {
+	for _, err := range errs {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+	}
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s server) queryTopFlowSessionsForObjects(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {

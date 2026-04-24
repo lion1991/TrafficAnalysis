@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 )
 
 type fakeBucketQueryer struct {
+	mu              sync.Mutex
 	from            time.Time
 	to              time.Time
 	clientIP        string
@@ -46,60 +48,83 @@ type fakeAnalysisOverviewQueryer struct {
 }
 
 func (f *fakeBucketQueryer) QueryBuckets(ctx context.Context, from, to time.Time) ([]store.BucketRow, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.bucketQueries++
-	return f.rows, nil
+	rows := f.rows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) QueryClientBuckets(ctx context.Context, from, to time.Time, clientIP string) ([]store.ClientBucketRow, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.clientIP = clientIP
 	f.clientQueries++
-	return f.clientRows, nil
+	rows := f.clientRows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) QueryEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.EndpointBucketRow, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.endpointQueries++
-	return f.endpointRows, nil
+	rows := f.endpointRows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) QueryWANEndpointBuckets(ctx context.Context, from, to time.Time) ([]store.WANEndpointBucketRow, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.wanQueries++
-	return f.wanEndpointRows, nil
+	rows := f.wanEndpointRows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) UpsertClientAlias(ctx context.Context, clientIP, clientMAC, alias string) error {
+	f.mu.Lock()
 	f.aliasIP = clientIP
 	f.aliasMAC = clientMAC
 	f.aliasName = alias
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeBucketQueryer) QueryDNSObservations(ctx context.Context, from, to time.Time) ([]traffic.DNSObservation, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.dnsQueries++
-	return f.dnsRows, nil
+	rows := f.dnsRows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) QueryTLSObservations(ctx context.Context, from, to time.Time) ([]traffic.TLSObservation, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.tlsQueries++
-	return f.tlsRows, nil
+	rows := f.tlsRows
+	f.mu.Unlock()
+	return rows, nil
 }
 
 func (f *fakeBucketQueryer) QueryFlowSessions(ctx context.Context, from, to time.Time) ([]traffic.FlowSession, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.flowQueries++
-	return f.flowSessions, nil
+	sessions := f.flowSessions
+	f.mu.Unlock()
+	return sessions, nil
 }
 
 func (f *fakeBucketQueryer) QueryFlowSessionByID(ctx context.Context, id int64) (traffic.FlowSession, error) {
@@ -869,20 +894,27 @@ type fakeFlowReconcileQueryer struct {
 }
 
 func (f *fakeFlowReconcileQueryer) QueryTopFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, limit int) ([]traffic.FlowSession, error) {
+	f.mu.Lock()
 	f.from = from
 	f.to = to
 	f.topLimit = limit
 	f.topQueries++
+	lan := f.topLANSessions
+	wan := f.topWANSessions
+	f.mu.Unlock()
 	if viewpoint == traffic.ViewpointLAN {
-		return f.topLANSessions, nil
+		return lan, nil
 	}
-	return f.topWANSessions, nil
+	return wan, nil
 }
 
 func (f *fakeFlowReconcileQueryer) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey, limit int) ([]traffic.FlowSession, error) {
+	f.mu.Lock()
 	f.remoteKeyCalls++
 	f.remoteKeyLimit = limit
-	return f.lanMatches, nil
+	matches := f.lanMatches
+	f.mu.Unlock()
+	return matches, nil
 }
 
 func TestAnalysisObjectsAPIUsesBoundedTopSessionsFastPath(t *testing.T) {
