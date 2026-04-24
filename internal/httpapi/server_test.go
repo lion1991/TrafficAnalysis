@@ -857,6 +857,75 @@ func TestAnalysisReconcileAPIReturnsMatchedAndUnmatchedSessions(t *testing.T) {
 	}
 }
 
+type fakeFlowReconcileQueryer struct {
+	*fakeBucketQueryer
+	topLimit       int
+	topQueries     int
+	remoteKeyCalls int
+	topLANSessions []traffic.FlowSession
+	topWANSessions []traffic.FlowSession
+	lanMatches     []traffic.FlowSession
+}
+
+func (f *fakeFlowReconcileQueryer) QueryTopFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, limit int) ([]traffic.FlowSession, error) {
+	f.from = from
+	f.to = to
+	f.topLimit = limit
+	f.topQueries++
+	if viewpoint == traffic.ViewpointLAN {
+		return f.topLANSessions, nil
+	}
+	return f.topWANSessions, nil
+}
+
+func (f *fakeFlowReconcileQueryer) QueryFlowSessionsByViewpointAndRemoteKeys(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint, keys []store.FlowSessionMatchKey) ([]traffic.FlowSession, error) {
+	f.remoteKeyCalls++
+	return f.lanMatches, nil
+}
+
+func TestAnalysisObjectsAPIUsesBoundedTopSessionsFastPath(t *testing.T) {
+	session := traffic.FlowSession{
+		ID:            1,
+		Viewpoint:     traffic.ViewpointLAN,
+		Protocol:      "tcp",
+		LocalIP:       trafficMustAddr("192.168.248.22"),
+		LocalPort:     53000,
+		RemoteIP:      trafficMustAddr("203.0.113.9"),
+		RemotePort:    443,
+		ClientIP:      trafficMustAddr("192.168.248.22"),
+		ClientMAC:     "00:11:22:33:44:55",
+		FirstSeen:     time.Date(2026, 4, 17, 10, 0, 1, 0, time.UTC),
+		LastSeen:      time.Date(2026, 4, 17, 10, 0, 20, 0, time.UTC),
+		UploadBytes:   4096,
+		DownloadBytes: 2048,
+		Packets:       12,
+	}
+	queryer := &fakeFlowReconcileQueryer{
+		fakeBucketQueryer: &fakeBucketQueryer{
+			flowSessions: []traffic.FlowSession{session},
+		},
+		topLANSessions: []traffic.FlowSession{session},
+	}
+	handler := NewHandler(queryer, Options{Location: time.UTC})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/analysis/objects?last=24h", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if queryer.topQueries != 1 {
+		t.Fatalf("expected objects handler to call the bounded top-N fast path once, got %d", queryer.topQueries)
+	}
+	if queryer.topLimit != maxAnalysisObjectSessionFetch {
+		t.Fatalf("expected fast path limit %d, got %d", maxAnalysisObjectSessionFetch, queryer.topLimit)
+	}
+	if queryer.flowQueries != 0 {
+		t.Fatalf("expected handler to skip the unbounded flow-session scan, got %d calls", queryer.flowQueries)
+	}
+}
+
 func TestBuildObjectsResponseLimitsRowsToTopTotals(t *testing.T) {
 	const limit = 200
 	start := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)

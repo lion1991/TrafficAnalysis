@@ -457,7 +457,7 @@ func (s server) handleAnalysisObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeCachedAnalysisJSON(w, analysisCacheKey("objects", from, to), func() (any, error) {
-		sessions, err := s.queryFlowSessionsByViewpoint(r.Context(), from, to, traffic.ViewpointLAN)
+		sessions, err := s.queryTopFlowSessionsForObjects(r.Context(), from, to, traffic.ViewpointLAN)
 		if err != nil {
 			return nil, err
 		}
@@ -614,6 +614,17 @@ func (s server) queryTLSObservationsByViewpoint(ctx context.Context, from, to ti
 	return filtered, nil
 }
 
+func (s server) queryTopFlowSessionsForObjects(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
+	if reconcileQueryer, ok := s.flowSessionQueryer.(FlowSessionReconcileQueryer); ok {
+		rows, err := reconcileQueryer.QueryTopFlowSessionsByViewpoint(ctx, from, to, viewpoint, maxAnalysisObjectSessionFetch)
+		if err != nil {
+			return nil, fmt.Errorf("query flow sessions")
+		}
+		return rows, nil
+	}
+	return s.queryFlowSessionsByViewpoint(ctx, from, to, viewpoint)
+}
+
 func (s server) queryFlowSessionsByViewpoint(ctx context.Context, from, to time.Time, viewpoint traffic.Viewpoint) ([]traffic.FlowSession, error) {
 	if s.viewpointFlowQueryer != nil {
 		rows, err := s.viewpointFlowQueryer.QueryFlowSessionsByViewpoint(ctx, from, to, viewpoint)
@@ -764,8 +775,9 @@ type analysisSignal struct {
 }
 
 const (
-	maxAnalysisObjectRows    = 200
-	maxAnalysisReconcileRows = 200
+	maxAnalysisObjectRows         = 200
+	maxAnalysisReconcileRows      = 200
+	maxAnalysisObjectSessionFetch = maxAnalysisObjectRows * 50
 )
 
 type objectsResponse struct {
